@@ -1,0 +1,12 @@
+{
+    "display_name": "MediaViewer",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Sasha",
+    "version": "0.2.0",
+    "homePage": "https://github.com/",
+    "auto_update": false
+}

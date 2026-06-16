@@ -1,0 +1,164 @@
+/* MediaViewer — floating, multi-instance media viewer for SillyTavern.
+   No backdrop dim: the layer is click-through, only the floating windows capture input. */
+
+#mediaviewer_layer {
+    position: fixed;
+    inset: 0;
+    z-index: 10050;
+    pointer-events: none; /* click-through — chat/text behind stays usable, swipes intact */
+    overflow: hidden;
+}
+
+.mv_win {
+    position: absolute;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    border-radius: 10px;
+    background: transparent;
+    will-change: left, top, width, height;
+    outline: none;
+}
+
+.mv_viewport {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border-radius: inherit;
+    background: rgba(0, 0, 0, 0.25);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+}
+
+.mv_media {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: fill;            /* viewport matches media aspect, so no distortion */
+    transform-origin: 0 0;
+    pointer-events: none;
+    -webkit-user-drag: none;
+    user-select: none;
+}
+
+.mv_media.mv_anim {
+    transition: transform 0.18s ease-out;
+}
+
+.mv_win.mv_locked {
+    cursor: zoom-in;
+}
+
+/* ---- control cluster (top-right): lock / crop / close ---- */
+.mv_controls {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 6px;
+    z-index: 6;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s ease;
+}
+
+/* mobile / touch reveal */
+.mv_controls.mv_show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* desktop: reveal on hover (no need to drag) */
+@media (hover: hover) and (pointer: fine) {
+    .mv_win:hover .mv_controls {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+.mv_btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.mv_btn:hover {
+    background: rgba(0, 0, 0, 0.85);
+}
+
+.mv_btn:active {
+    transform: scale(0.92);
+}
+
+.mv_btn.mv_active {
+    background: var(--SmartThemeQuoteColor, #69b7ff);
+    color: #000;
+}
+
+/* ---- crop mode (NOT clipped — sits above the clipped viewport) ---- */
+.mv_crop {
+    position: absolute;
+    inset: 0;
+    z-index: 7;
+    pointer-events: none;
+}
+
+.mv_shade {
+    position: absolute;
+    border: 1px dashed rgba(255, 255, 255, 0.95);
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.mv_handle {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    margin: -13px 0 0 -13px;     /* centered on the edge; full circle, never clipped */
+    border-radius: 50%;
+    background: #fff;
+    border: 3px solid #2b2b2b;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+    pointer-events: auto;
+    touch-action: none;
+    z-index: 9;
+}
+
+.mv_h_nw { cursor: nwse-resize; }
+.mv_h_se { cursor: nwse-resize; }
+.mv_h_ne { cursor: nesw-resize; }
+.mv_h_sw { cursor: nesw-resize; }
+.mv_h_n, .mv_h_s { cursor: ns-resize; }
+.mv_h_w, .mv_h_e { cursor: ew-resize; }
+
+.mv_crop_actions {
+    position: absolute;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    z-index: 10;
+    pointer-events: auto;
+}
+
+/* ---- settings panel ---- */
+#mediaviewer_settings .mv_flex {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
