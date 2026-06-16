@@ -29,7 +29,7 @@ const DEFAULTS = {
     avatars: true,
     gallery: true,
     fadeMs: 1800,
-    holdZoom: 1.7,
+    holdZoom: 1.2,
     maxZoom: 6,
     imageHoldMs: 190,
     videoHoldMs: 300,
@@ -80,10 +80,13 @@ function ensureLayer() {
 /* ------------------------------------------------------------------ */
 
 class FloatItem {
-    constructor({ url, type }) {
+    constructor({ url, type, fallback }) {
         this.url = url;
         this.type = type;
+        this.fallback = fallback || '';
         this.mode = 'free';
+        this.bornAt = Date.now();
+        this.userTouched = false;
 
         this.A = 1;                 // aspect ratio
         this.fw = 0; this.fh = 0;   // frame (window) size
@@ -129,7 +132,15 @@ class FloatItem {
         media.className = 'mv_media';
         media.setAttribute('data-swipe-ignore', 'true');
         media.draggable = false;
-        media.addEventListener('error', () => console.warn('[MediaViewer] media failed:', this.url), { once: true });
+        let triedFallback = false;
+        media.addEventListener('error', () => {
+            if (!triedFallback && this.fallback && this.fallback !== this.url) {
+                triedFallback = true;
+                media.src = this.fallback; // high-res failed → fall back to the thumbnail
+            } else {
+                console.warn('[MediaViewer] media failed:', this.url);
+            }
+        });
 
         viewport.appendChild(media);
         win.appendChild(viewport);
@@ -151,6 +162,18 @@ class FloatItem {
 
         this._initSizeAndPlace();
         this._bindGestures();
+        this._scheduleRecenters();
+    }
+
+    /* Mobile safety net: re-assert the centered position over the first ~0.6s in case a
+       layout/viewport shift (address bar, etc.) pushes the freshly-opened window off-screen.
+       Stops as soon as the user interacts. */
+    _scheduleRecenters() {
+        [70, 180, 350, 600].forEach(ms => setTimeout(() => {
+            if (!this.userTouched && this.mode === 'free' && document.body.contains(this.win)) {
+                this._centerInView();
+            }
+        }, ms));
     }
 
     _mkBtn(icon, title, onClick) {
@@ -527,6 +550,10 @@ class FloatItem {
 
     _onDown(e) {
         if (this.mode === 'crop') return;
+        // ignore stray events fired right after opening (mobile compat click/pointer that
+        // would otherwise grab & fling the window)
+        if (Date.now() - this.bornAt < 300) { try { e.preventDefault(); } catch { } return; }
+        this.userTouched = true;
         e.preventDefault();
         this.win.setPointerCapture?.(e.pointerId);
         this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -660,6 +687,20 @@ FloatItem._spawn = 0;
 
 /* ------------------------------------------------------------------ */
 
+/* Replicates ST's native full-res avatar resolution (script.js ".mes .avatar" handler):
+   thumbnail "/thumbnail?type=avatar&file=NAME" → "/characters/NAME" (char) or
+   "/User Avatars/NAME" (user/persona). Returns the thumb unchanged if it's not a thumbnail. */
+function avatarFullRes(thumb, mes) {
+    if (!thumb || thumb.startsWith('data:') || /^\/?img\//.test(thumb)) return thumb;
+    const i = thumb.lastIndexOf('=');
+    if (i < 0) return thumb;
+    const file = thumb.substring(i + 1);
+    if (!file) return thumb;
+    const isUser = mes?.getAttribute('is_user') === 'true';
+    const isSystem = mes?.getAttribute('is_system') === 'true';
+    return (isUser || isSystem) ? ('/User Avatars/' + file) : ('/characters/' + file);
+}
+
 function resolveMedia(target) {
     const s = getSettings();
     const srcOf = el => el?.currentSrc || el?.getAttribute('src') || el?.src || '';
@@ -667,8 +708,11 @@ function resolveMedia(target) {
     if (s.avatars) {
         const av = target.closest?.('.mes .avatar');
         if (av) {
-            const url = srcOf(av.querySelector('img'));
-            if (url) return { url, type: 'image' };
+            const thumb = srcOf(av.querySelector('img'));
+            if (thumb) {
+                const full = avatarFullRes(thumb, av.closest('.mes'));
+                return { url: full || thumb, type: 'image', fallback: thumb };
+            }
         }
     }
     if (s.gallery) {
