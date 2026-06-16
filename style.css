@@ -19,13 +19,15 @@
 
 .mv_win {
     position: fixed;
+    left: 0;
+    top: 0;                /* offset is applied via transform: translate() — stable on iOS */
     pointer-events: auto;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     border-radius: 10px;
     background: transparent;
-    will-change: left, top, width, height;
+    will-change: transform, width, height;
     outline: none;
 }
 

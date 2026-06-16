@@ -8,13 +8,14 @@
  * No backdrop dim: the layer is click-through, the page behind stays visible/usable, and
  * ST swipes keep working (windows live outside #sheld + data-swipe-ignore).
  *
- * Geometry: frame (fw×fh, the visible window) + image (iw×ih) + offset (ox,oy).
+ * The window is positioned with CSS `transform: translate()` (not left/top) — stable on
+ * iOS Safari. Geometry: frame (fw×fh, the visible window) + image (iw×ih) + offset (ox,oy).
  * Crop apply shrinks the window to the crop region so the window always equals what you see.
  *
  * Modes: free (drag move / pinch / wheel resize) · locked (hold = temp zoom, two-finger /
  * wheel = persistent zoom, video tap=play/pause & double-tap ±5s) · resize (4 corner handles,
  * aspect-locked, move + apply/cancel) · crop (drag edges or the selection, apply/cancel).
- * Controls (top-right): lock · resize · crop · close · reset.
+ * Controls (top-right): lock · resize · crop · reset · close.
  *
  * Per-media state (position/zoom/crop) is remembered and restored on reopen.
  */
@@ -41,7 +42,7 @@ const TAP_MAX_MS = 250;
 const TAP_MOVE_SLOP = 8;
 const DBL_TAP_MS = 300;
 const MIN_WIN = 90;
-const MIN_CROP_PX = 210;   // smallest crop region — keeps the controls + action buttons usable
+const MIN_CROP_PX = 210;
 const WHEEL_STEP = 1.1;
 
 let zBase = 2147482000;
@@ -89,6 +90,7 @@ class FloatItem {
         this.fw = 0; this.fh = 0;
         this.iw = 0; this.ih = 0;
         this.ox = 0; this.oy = 0;
+        this.posX = 0; this.posY = 0;
         this._placed = false;
         this.orig = null;
 
@@ -112,6 +114,7 @@ class FloatItem {
         const win = document.createElement('div');
         win.className = 'mv_win';
         win.tabIndex = 0;
+        win.style.visibility = 'hidden'; // shown once correctly sized (no square flash)
         win.setAttribute('data-swipe-ignore', 'true');
 
         const viewport = document.createElement('div');
@@ -145,9 +148,9 @@ class FloatItem {
         this.btnLock = this._mkBtn('fa-lock-open', 'Lock / unlock', () => this.toggleLock());
         this.btnResize = this._mkBtn('fa-expand', 'Resize', () => this.toggleResize());
         this.btnCrop = this._mkBtn('fa-crop-simple', 'Crop', () => this.toggleCrop());
-        this.btnClose = this._mkBtn('fa-xmark', 'Close', () => this.close());
         this.btnReset = this._mkBtn('fa-rotate-left', 'Reset', () => this.reset());
-        controls.append(this.btnLock, this.btnResize, this.btnCrop, this.btnClose, this.btnReset);
+        this.btnClose = this._mkBtn('fa-xmark', 'Close', () => this.close());
+        controls.append(this.btnLock, this.btnResize, this.btnCrop, this.btnReset, this.btnClose);
         win.appendChild(controls);
 
         this.win = win; this.viewport = viewport; this.media = media; this.controls = controls;
@@ -171,6 +174,8 @@ class FloatItem {
         return b;
     }
 
+    _show() { this.win.style.visibility = 'visible'; }
+
     _fitFor(natW, natH) {
         const A = (natW && natH) ? natW / natH : 1;
         const vb = viewportBox();
@@ -184,16 +189,13 @@ class FloatItem {
     }
 
     _initSizeAndPlace() {
-        // restore remembered state for this media, if any
         const saved = FloatItem.saved[this.url];
         if (saved) {
             this.A = saved.A; this.fw = saved.fw; this.fh = saved.fh;
             this.iw = saved.iw; this.ih = saved.ih; this.ox = saved.ox; this.oy = saved.oy;
-            this._applyFrame(); this._applyMedia();
-            this.win.style.left = saved.left + 'px';
-            this.win.style.top = saved.top + 'px';
-            this._clampWindowIntoView();
-            this._placed = true;
+            this.posX = saved.posX; this.posY = saved.posY;
+            this._applyFrame(); this._applyMedia(); this._clampWindowIntoView();
+            this._placed = true; this._show();
             if (saved.mode === 'locked') {
                 this.mode = 'locked';
                 this.win.classList.add('mv_locked');
@@ -203,38 +205,32 @@ class FloatItem {
         }
 
         const onMeta = (natW, natH) => {
-            this.orig = this._fitFor(natW, natH); // remember natural fit for Reset
+            this.orig = this._fitFor(natW, natH); // natural fit, used by Reset
             if (!this._placed) {
                 this.A = this.orig.A; this.fw = this.orig.fw; this.fh = this.orig.fh;
                 this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
                 this._applyFrame(); this._applyMedia(); this._centerInView();
                 this._placed = true;
             }
+            this._show();
         };
 
         if (this.type === 'video') {
-            if (this.media.readyState >= 1 && this.media.videoWidth) {
-                onMeta(this.media.videoWidth, this.media.videoHeight);
-            } else {
-                this.media.addEventListener('loadedmetadata',
-                    () => onMeta(this.media.videoWidth, this.media.videoHeight), { once: true });
-                if (!this._placed) onMeta(640, 360);
-            }
+            if (this.media.readyState >= 1 && this.media.videoWidth) onMeta(this.media.videoWidth, this.media.videoHeight);
+            else this.media.addEventListener('loadedmetadata', () => onMeta(this.media.videoWidth, this.media.videoHeight), { once: true });
             this.media.play?.().catch(() => { });
         } else {
-            if (this.media.complete && this.media.naturalWidth) {
-                onMeta(this.media.naturalWidth, this.media.naturalHeight);
-            } else {
-                this.media.addEventListener('load',
-                    () => onMeta(this.media.naturalWidth, this.media.naturalHeight), { once: true });
-                if (!this._placed) onMeta(400, 400);
-            }
+            if (this.media.complete && this.media.naturalWidth) onMeta(this.media.naturalWidth, this.media.naturalHeight);
+            else this.media.addEventListener('load', () => onMeta(this.media.naturalWidth, this.media.naturalHeight), { once: true });
         }
     }
 
     _applyFrame() {
         this.win.style.width = this.fw + 'px';
         this.win.style.height = this.fh + 'px';
+    }
+    _applyPos() {
+        this.win.style.transform = `translate(${this.posX}px, ${this.posY}px)`;
     }
     _applyMedia(animate = false) {
         this.media.classList.toggle('mv_anim', !!animate);
@@ -247,12 +243,10 @@ class FloatItem {
     _centerInView() {
         const vb = viewportBox();
         const off = this.spawnIdx * 20;
-        let left = (vb.w - this.fw) / 2 + off;
-        let top = (vb.h - this.fh) / 2 + off;
-        if (!isFinite(left)) left = 6;
-        if (!isFinite(top)) top = 6;
-        this.win.style.left = left + 'px';
-        this.win.style.top = top + 'px';
+        this.posX = (vb.w - this.fw) / 2 + off;
+        this.posY = (vb.h - this.fh) / 2 + off;
+        if (!isFinite(this.posX)) this.posX = 6;
+        if (!isFinite(this.posY)) this.posY = 6;
         this._clampWindowIntoView();
     }
 
@@ -260,12 +254,9 @@ class FloatItem {
     _clampWindowIntoView() {
         const vb = viewportBox();
         const m = Math.max(48, Math.min(140, this.fw * 0.6, this.fh * 0.6));
-        let left = parseFloat(this.win.style.left) || 0;
-        let top = parseFloat(this.win.style.top) || 0;
-        left = clamp(left, m - this.fw, vb.w - m);
-        top = clamp(top, m - this.fh, vb.h - m);
-        this.win.style.left = left + 'px';
-        this.win.style.top = top + 'px';
+        this.posX = clamp(this.posX, m - this.fw, vb.w - m);
+        this.posY = clamp(this.posY, m - this.fh, vb.h - m);
+        this._applyPos();
     }
 
     bringToFront() { this.win.style.zIndex = String(++zBase); }
@@ -303,15 +294,13 @@ class FloatItem {
         const vb = viewportBox();
         const newFw = clamp(this.fw * ratio, MIN_WIN, vb.w * 3);
         const r = newFw / this.fw;
-        const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
         this.fw *= r; this.fh *= r; this.iw *= r; this.ih *= r; this.ox *= r; this.oy *= r;
-        this.win.style.left = (cx - (cx - left) * r) + 'px';
-        this.win.style.top = (cy - (cy - top) * r) + 'px';
-        this._applyFrame(); this._applyMedia();
-        this._clampWindowIntoView();
+        this.posX = cx - (cx - this.posX) * r;
+        this.posY = cy - (cy - this.posY) * r;
+        this._applyFrame(); this._applyMedia(); this._clampWindowIntoView();
     }
 
-    /* ---- reset ---- */
+    /* ---- reset (keeps current position) ---- */
     reset() {
         if (this.mode === 'crop') this._exitCrop(false);
         if (this.mode === 'resize') this._exitResize(false);
@@ -325,7 +314,7 @@ class FloatItem {
         this.viewport.style.clipPath = '';
         if (this.orig) { this.A = this.orig.A; this.fw = this.orig.fw; this.fh = this.orig.fh; }
         this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
-        this._applyFrame(); this._applyMedia(true); this._centerInView();
+        this._applyFrame(); this._applyMedia(true); this._clampWindowIntoView(); // keep position
         this.showControls(); this.scheduleHide();
     }
 
@@ -356,10 +345,7 @@ class FloatItem {
         this.mode = 'resize';
         this.btnResize.classList.add('mv_active');
         this.showControls();
-        this.geomBackup = {
-            fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy,
-            left: parseFloat(this.win.style.left) || 0, top: parseFloat(this.win.style.top) || 0,
-        };
+        this.geomBackup = { fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy, posX: this.posX, posY: this.posY };
         const layer = document.createElement('div');
         layer.className = 'mv_resize';
         const handles = {};
@@ -385,15 +371,14 @@ class FloatItem {
         if (!this.resizeHandles) return;
         const set = (k, x, y) => Object.assign(this.resizeHandles[k].style, { left: x + 'px', top: y + 'px' });
         set('nw', 0, 0); set('ne', this.fw, 0); set('sw', 0, this.fh); set('se', this.fw, this.fh);
-        if (this.resizeActions) Object.assign(this.resizeActions.style,
-            { left: (this.fw / 2) + 'px', top: (this.fh - 46) + 'px' });
+        if (this.resizeActions) Object.assign(this.resizeActions.style, { left: (this.fw / 2) + 'px', top: (this.fh - 46) + 'px' });
     }
     _resizeCornerDown(e, pos) {
         e.preventDefault(); e.stopPropagation();
         const sx = e.clientX;
-        const sLeft = parseFloat(this.win.style.left) || 0, sTop = parseFloat(this.win.style.top) || 0;
+        const sX = this.posX, sY = this.posY;
         const sFw = this.fw, sFh = this.fh, sIw = this.iw, sIh = this.ih, sOx = this.ox, sOy = this.oy;
-        const right = sLeft + sFw, bottom = sTop + sFh;
+        const right = sX + sFw, bottom = sY + sFh;
         const vb = viewportBox();
         const move = ev => {
             const dx = ev.clientX - sx;
@@ -401,12 +386,11 @@ class FloatItem {
             newFw = clamp(newFw, MIN_WIN, vb.w * 3);
             const r = newFw / sFw;
             this.fw = sFw * r; this.fh = sFh * r; this.iw = sIw * r; this.ih = sIh * r; this.ox = sOx * r; this.oy = sOy * r;
-            let nl = sLeft, nt = sTop;
-            if (pos === 'nw') { nl = right - this.fw; nt = bottom - this.fh; }
-            else if (pos === 'ne') { nt = bottom - this.fh; }
-            else if (pos === 'sw') { nl = right - this.fw; }
-            this.win.style.left = nl + 'px'; this.win.style.top = nt + 'px';
-            this._applyFrame(); this._applyMedia(); this._renderResize();
+            this.posX = sX; this.posY = sY;
+            if (pos === 'nw') { this.posX = right - this.fw; this.posY = bottom - this.fh; }
+            else if (pos === 'ne') { this.posY = bottom - this.fh; }
+            else if (pos === 'sw') { this.posX = right - this.fw; }
+            this._applyFrame(); this._applyMedia(); this._applyPos(); this._renderResize();
         };
         const up = () => {
             window.removeEventListener('pointermove', move);
@@ -420,8 +404,8 @@ class FloatItem {
         if (!apply && this.geomBackup) {
             const g = this.geomBackup;
             this.fw = g.fw; this.fh = g.fh; this.iw = g.iw; this.ih = g.ih; this.ox = g.ox; this.oy = g.oy;
-            this.win.style.left = g.left + 'px'; this.win.style.top = g.top + 'px';
-            this._applyFrame(); this._applyMedia();
+            this.posX = g.posX; this.posY = g.posY;
+            this._applyFrame(); this._applyMedia(); this._applyPos();
         }
         this.geomBackup = null;
         this.resizeLayer?.remove();
@@ -491,9 +475,8 @@ class FloatItem {
         }
         if (this.cropMove) Object.assign(this.cropMove.style,
             { left: l + 'px', top: t + 'px', width: (w - l - r) + 'px', height: (h - t - b) + 'px' });
-        if (this.cropActions) {
-            Object.assign(this.cropActions.style, { left: ((l + rx) / 2) + 'px', top: clamp(by - 46, t + 6, h - 46) + 'px' });
-        }
+        if (this.cropActions) Object.assign(this.cropActions.style,
+            { left: ((l + rx) / 2) + 'px', top: clamp(by - 46, t + 6, h - 46) + 'px' });
         this.controls.style.top = (t + 6) + 'px';
         this.controls.style.right = (r + 6) + 'px';
     }
@@ -544,15 +527,13 @@ class FloatItem {
     _exitCrop(apply) {
         if (apply) {
             const { l, t, r, b } = this.crop;
-            const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
             this.ox -= l * this.fw;
             this.oy -= t * this.fh;
-            this.win.style.left = (left + l * this.fw) + 'px';
-            this.win.style.top = (top + t * this.fh) + 'px';
+            this.posX += l * this.fw;
+            this.posY += t * this.fh;
             this.fw = this.fw * (1 - l - r);
             this.fh = this.fh * (1 - t - b);
-            this._applyFrame(); this._clampOffset(); this._applyMedia();
-            this._clampWindowIntoView();
+            this._applyFrame(); this._clampOffset(); this._applyMedia(); this._applyPos(); this._clampWindowIntoView();
         }
         this.cropLayer?.remove();
         this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = this.cropMove = null;
@@ -598,10 +579,7 @@ class FloatItem {
         this.lastPos = { x: e.clientX, y: e.clientY };
 
         if (this.mode === 'free' || this.mode === 'resize') {
-            this.dragStart = {
-                left: parseFloat(this.win.style.left) || 0,
-                top: parseFloat(this.win.style.top) || 0,
-            };
+            this.dragStart = { x: this.posX, y: this.posY };
         } else if (this.mode === 'locked') {
             const delay = this.type === 'video' ? getSettings().videoHoldMs : getSettings().imageHoldMs;
             this.holdTimer = setTimeout(() => this._engageHold(e.clientX, e.clientY), delay);
@@ -616,10 +594,7 @@ class FloatItem {
 
     _startPinch() {
         const pts = [...this.pointers.values()];
-        this.pinch = {
-            dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
-            iw0: this.iw,
-        };
+        this.pinch = { dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), iw0: this.iw };
         this.holdActive = false; this.persist = null;
     }
 
@@ -633,11 +608,7 @@ class FloatItem {
             const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
             const ratio = dist / (this.pinch.dist || dist);
             if (this.mode === 'locked') this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
-            else {
-                this.scaleAround(mid.x, mid.y, ratio);
-                this.pinch.dist = dist;
-                if (this.mode === 'resize') this._renderResize();
-            }
+            else { this.scaleAround(mid.x, mid.y, ratio); this.pinch.dist = dist; if (this.mode === 'resize') this._renderResize(); }
             return;
         }
 
@@ -649,12 +620,10 @@ class FloatItem {
         }
 
         if (this.mode === 'free' || this.mode === 'resize') {
-            this.dragStart.left += dx; this.dragStart.top += dy;
-            this.win.style.left = this.dragStart.left + 'px';
-            this.win.style.top = this.dragStart.top + 'px';
+            this.dragStart.x += dx; this.dragStart.y += dy;
+            this.posX = this.dragStart.x; this.posY = this.dragStart.y;
             this._clampWindowIntoView();
-            this.dragStart.left = parseFloat(this.win.style.left) || 0;
-            this.dragStart.top = parseFloat(this.win.style.top) || 0;
+            this.dragStart.x = this.posX; this.dragStart.y = this.posY;
             if (this.mode === 'resize') this._renderResize();
         } else if (this.mode === 'locked' && (this.holdActive || this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5)) {
             this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
@@ -671,6 +640,7 @@ class FloatItem {
             const rem = [...this.pointers.values()][0];
             this.lastPos = { x: rem.x, y: rem.y };
             this.downInfo = { x: rem.x, y: rem.y, t: Date.now(), moved: true };
+            if (this.mode === 'free' || this.mode === 'resize') this.dragStart = { x: this.posX, y: this.posY };
             return;
         }
         if (this.pointers.size > 1) return;
@@ -714,8 +684,7 @@ class FloatItem {
     _exportState() {
         return {
             A: this.A, fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy,
-            left: parseFloat(this.win.style.left) || 0, top: parseFloat(this.win.style.top) || 0,
-            mode: this._baseMode(),
+            posX: this.posX, posY: this.posY, mode: this._baseMode(),
         };
     }
 
@@ -735,7 +704,6 @@ FloatItem.saved = {};
 
 /* ------------------------------------------------------------------ */
 
-/* Replicates ST's native full-res avatar resolution. */
 function avatarFullRes(thumb, mes) {
     if (!thumb || thumb.startsWith('data:') || /^\/?img\//.test(thumb)) return thumb;
     const i = thumb.lastIndexOf('=');
@@ -750,9 +718,10 @@ function avatarFullRes(thumb, mes) {
 function resolveMedia(target) {
     const s = getSettings();
     const srcOf = el => el?.currentSrc || el?.getAttribute('src') || el?.src || '';
+    const inChat = target.closest?.('#chat'); // only the live message stream, never chat-select previews
 
-    if (s.avatars) {
-        const av = target.closest?.('.mes .avatar');
+    if (s.avatars && inChat) {
+        const av = target.closest('.mes .avatar');
         if (av) {
             const thumb = srcOf(av.querySelector('img'));
             if (thumb) {
@@ -768,8 +737,8 @@ function resolveMedia(target) {
             if (url) return { url, type: isVideoUrl(url) ? 'video' : 'image' };
         }
     }
-    if (s.chat) {
-        const cont = target.closest?.(
+    if (s.chat && inChat) {
+        const cont = target.closest(
             '.mes_text img, .mes_text video, .mes_text p img, .mes_text p video, ' +
             '.mes_media_container, .mes_img, .mes_media_enlarge, .mes_video');
         if (cont) {
