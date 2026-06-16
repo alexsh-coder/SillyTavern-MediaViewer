@@ -3,19 +3,20 @@
  *
  * Click any media (chat images/videos, message avatars, image gallery thumbs) to pop it
  * out as a draggable floating window. Multiple can be open at once. While enabled it
- * replaces SillyTavern's built-in lightbox / avatar zoom (disable it → built-in returns).
+ * replaces SillyTavern's built-in lightbox / avatar zoom / gallery popup.
  *
  * No backdrop dim: the layer is click-through, the page behind stays visible/usable, and
  * ST swipes keep working (windows live outside #sheld + data-swipe-ignore).
  *
- * Geometry model (so the window ALWAYS equals what you see — crop shrinks the window):
- *   frame  : fw × fh   (the visible window box; overflow hidden)
- *   image  : iw × ih   (the displayed media), offset (ox, oy) inside the frame
- *   uncropped & unzoomed → iw=fw, ih=fh, ox=oy=0 (image exactly fills frame)
+ * Geometry: frame (fw×fh, the visible window) + image (iw×ih) + offset (ox,oy).
+ * Crop apply shrinks the window to the crop region so the window always equals what you see.
  *
  * Modes: free (drag move / pinch / wheel resize) · locked (hold = temp zoom, two-finger /
- * wheel = persistent zoom, video tap=play/pause & double-tap ±5s) · resize (4 corner
- * handles, aspect-locked) · crop (drag edges, apply shrinks the window to the crop).
+ * wheel = persistent zoom, video tap=play/pause & double-tap ±5s) · resize (4 corner handles,
+ * aspect-locked, move + apply/cancel) · crop (drag edges or the selection, apply/cancel).
+ * Controls (top-right): lock · resize · crop · close · reset.
+ *
+ * Per-media state (position/zoom/crop) is remembered and restored on reopen.
  */
 
 import { eventSource, event_types, saveSettingsDebounced } from '../../../../script.js';
@@ -40,7 +41,7 @@ const TAP_MAX_MS = 250;
 const TAP_MOVE_SLOP = 8;
 const DBL_TAP_MS = 300;
 const MIN_WIN = 90;
-const MIN_CROP_PX = 175;   // smallest crop region — keeps both action buttons inside
+const MIN_CROP_PX = 210;   // smallest crop region — keeps the controls + action buttons usable
 const WHEEL_STEP = 1.1;
 
 let zBase = 2147482000;
@@ -60,8 +61,6 @@ function isVideoUrl(url) {
     } catch { return false; }
 }
 
-/* Visible viewport in CSS px — matches the fixed `inset:0` layer (and works under
-   DevTools device emulation, where visualViewport misreports). */
 function viewportBox() {
     return {
         w: window.innerWidth || document.documentElement.clientWidth,
@@ -85,16 +84,15 @@ class FloatItem {
         this.type = type;
         this.fallback = fallback || '';
         this.mode = 'free';
-        this.bornAt = Date.now();
-        this.userTouched = false;
 
-        this.A = 1;                 // aspect ratio
-        this.fw = 0; this.fh = 0;   // frame (window) size
-        this.iw = 0; this.ih = 0;   // displayed image size
-        this.ox = 0; this.oy = 0;   // image offset within frame
+        this.A = 1;
+        this.fw = 0; this.fh = 0;
+        this.iw = 0; this.ih = 0;
+        this.ox = 0; this.oy = 0;
+        this._placed = false;
+        this.orig = null;
 
         this.crop = { t: 0, r: 0, b: 0, l: 0 };
-        this.cropBackup = null;
 
         this.pointers = new Map();
         this.pinch = null;
@@ -112,7 +110,7 @@ class FloatItem {
 
     _build() {
         const win = document.createElement('div');
-        win.className = 'mv_win mv_in';
+        win.className = 'mv_win';
         win.tabIndex = 0;
         win.setAttribute('data-swipe-ignore', 'true');
 
@@ -135,11 +133,8 @@ class FloatItem {
         let triedFallback = false;
         media.addEventListener('error', () => {
             if (!triedFallback && this.fallback && this.fallback !== this.url) {
-                triedFallback = true;
-                media.src = this.fallback; // high-res failed → fall back to the thumbnail
-            } else {
-                console.warn('[MediaViewer] media failed:', this.url);
-            }
+                triedFallback = true; media.src = this.fallback;
+            } else { console.warn('[MediaViewer] media failed:', this.url); }
         });
 
         viewport.appendChild(media);
@@ -151,29 +146,17 @@ class FloatItem {
         this.btnResize = this._mkBtn('fa-expand', 'Resize', () => this.toggleResize());
         this.btnCrop = this._mkBtn('fa-crop-simple', 'Crop', () => this.toggleCrop());
         this.btnClose = this._mkBtn('fa-xmark', 'Close', () => this.close());
-        controls.append(this.btnLock, this.btnResize, this.btnCrop, this.btnClose);
+        this.btnReset = this._mkBtn('fa-rotate-left', 'Reset', () => this.reset());
+        controls.append(this.btnLock, this.btnResize, this.btnCrop, this.btnClose, this.btnReset);
         win.appendChild(controls);
 
         this.win = win; this.viewport = viewport; this.media = media; this.controls = controls;
 
         ensureLayer().appendChild(win);
         this.bringToFront();
-        win.addEventListener('animationend', () => win.classList.remove('mv_in'), { once: true });
 
         this._initSizeAndPlace();
         this._bindGestures();
-        this._scheduleRecenters();
-    }
-
-    /* Mobile safety net: re-assert the centered position over the first ~0.6s in case a
-       layout/viewport shift (address bar, etc.) pushes the freshly-opened window off-screen.
-       Stops as soon as the user interacts. */
-    _scheduleRecenters() {
-        [70, 180, 350, 600].forEach(ms => setTimeout(() => {
-            if (!this.userTouched && this.mode === 'free' && document.body.contains(this.win)) {
-                this._centerInView();
-            }
-        }, ms));
     }
 
     _mkBtn(icon, title, onClick) {
@@ -188,37 +171,63 @@ class FloatItem {
         return b;
     }
 
+    _fitFor(natW, natH) {
+        const A = (natW && natH) ? natW / natH : 1;
+        const vb = viewportBox();
+        const maxW = Math.min(vb.w * 0.92, 1000);
+        const maxH = vb.h * 0.88;
+        let w = Math.min(natW || maxW, maxW);
+        let h = w / A;
+        if (h > maxH) { h = maxH; w = h * A; }
+        w = clamp(w, MIN_WIN, maxW);
+        return { A, fw: w, fh: w / A };
+    }
+
     _initSizeAndPlace() {
-        const place = (natW, natH) => {
-            this.A = (natW && natH) ? natW / natH : 1;
-            const vb = viewportBox();
-            const maxW = Math.min(vb.w * 0.92, 1000);
-            const maxH = vb.h * 0.88;
-            let w = Math.min(natW || maxW, maxW);
-            let h = w / this.A;
-            if (h > maxH) { h = maxH; w = h * this.A; }
-            w = clamp(w, MIN_WIN, maxW);
-            this.fw = w; this.fh = w / this.A;
-            this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
-            this._applyFrame(); this._applyMedia(); this._centerInView();
+        // restore remembered state for this media, if any
+        const saved = FloatItem.saved[this.url];
+        if (saved) {
+            this.A = saved.A; this.fw = saved.fw; this.fh = saved.fh;
+            this.iw = saved.iw; this.ih = saved.ih; this.ox = saved.ox; this.oy = saved.oy;
+            this._applyFrame(); this._applyMedia();
+            this.win.style.left = saved.left + 'px';
+            this.win.style.top = saved.top + 'px';
+            this._clampWindowIntoView();
+            this._placed = true;
+            if (saved.mode === 'locked') {
+                this.mode = 'locked';
+                this.win.classList.add('mv_locked');
+                this.btnLock.classList.add('mv_active');
+                this.btnLock.innerHTML = '<i class="fa-solid fa-lock"></i>';
+            }
+        }
+
+        const onMeta = (natW, natH) => {
+            this.orig = this._fitFor(natW, natH); // remember natural fit for Reset
+            if (!this._placed) {
+                this.A = this.orig.A; this.fw = this.orig.fw; this.fh = this.orig.fh;
+                this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
+                this._applyFrame(); this._applyMedia(); this._centerInView();
+                this._placed = true;
+            }
         };
 
         if (this.type === 'video') {
             if (this.media.readyState >= 1 && this.media.videoWidth) {
-                place(this.media.videoWidth, this.media.videoHeight);
+                onMeta(this.media.videoWidth, this.media.videoHeight);
             } else {
                 this.media.addEventListener('loadedmetadata',
-                    () => place(this.media.videoWidth, this.media.videoHeight), { once: true });
-                place(640, 360);
+                    () => onMeta(this.media.videoWidth, this.media.videoHeight), { once: true });
+                if (!this._placed) onMeta(640, 360);
             }
             this.media.play?.().catch(() => { });
         } else {
             if (this.media.complete && this.media.naturalWidth) {
-                place(this.media.naturalWidth, this.media.naturalHeight);
+                onMeta(this.media.naturalWidth, this.media.naturalHeight);
             } else {
                 this.media.addEventListener('load',
-                    () => place(this.media.naturalWidth, this.media.naturalHeight), { once: true });
-                place(400, 400);
+                    () => onMeta(this.media.naturalWidth, this.media.naturalHeight), { once: true });
+                if (!this._placed) onMeta(400, 400);
             }
         }
     }
@@ -240,10 +249,21 @@ class FloatItem {
         const off = this.spawnIdx * 20;
         let left = (vb.w - this.fw) / 2 + off;
         let top = (vb.h - this.fh) / 2 + off;
-        left = clamp(left, 4, vb.w - this.fw - 4);
-        top = clamp(top, 4, vb.h - this.fh - 4);
         if (!isFinite(left)) left = 6;
         if (!isFinite(top)) top = 6;
+        this.win.style.left = left + 'px';
+        this.win.style.top = top + 'px';
+        this._clampWindowIntoView();
+    }
+
+    /* Hard guarantee: the window can never leave the screen (keeps a slice always visible). */
+    _clampWindowIntoView() {
+        const vb = viewportBox();
+        const m = Math.max(48, Math.min(140, this.fw * 0.6, this.fh * 0.6));
+        let left = parseFloat(this.win.style.left) || 0;
+        let top = parseFloat(this.win.style.top) || 0;
+        left = clamp(left, m - this.fw, vb.w - m);
+        top = clamp(top, m - this.fh, vb.h - m);
         this.win.style.left = left + 'px';
         this.win.style.top = top + 'px';
     }
@@ -267,7 +287,6 @@ class FloatItem {
         this.oy = (this.ih <= this.fh) ? (this.fh - this.ih) / 2 : clamp(this.oy, this.fh - this.ih, 0);
     }
 
-    /* zoom the image to a focal screen point, by setting a new image width */
     zoomTo(screenX, screenY, newIw, animate = false) {
         const rect = this.viewport.getBoundingClientRect();
         const px = screenX - rect.left, py = screenY - rect.top;
@@ -280,7 +299,6 @@ class FloatItem {
         this._applyMedia(animate);
     }
 
-    /* scale the whole thing (frame + image) by a ratio around a focal screen point */
     scaleAround(cx, cy, ratio) {
         const vb = viewportBox();
         const newFw = clamp(this.fw * ratio, MIN_WIN, vb.w * 3);
@@ -290,6 +308,25 @@ class FloatItem {
         this.win.style.left = (cx - (cx - left) * r) + 'px';
         this.win.style.top = (cy - (cy - top) * r) + 'px';
         this._applyFrame(); this._applyMedia();
+        this._clampWindowIntoView();
+    }
+
+    /* ---- reset ---- */
+    reset() {
+        if (this.mode === 'crop') this._exitCrop(false);
+        if (this.mode === 'resize') this._exitResize(false);
+        if (this.mode === 'locked') {
+            this.mode = 'free';
+            this.win.classList.remove('mv_locked');
+            this.btnLock.classList.remove('mv_active');
+            this.btnLock.innerHTML = '<i class="fa-solid fa-lock-open"></i>';
+        }
+        this.crop = { t: 0, r: 0, b: 0, l: 0 };
+        this.viewport.style.clipPath = '';
+        if (this.orig) { this.A = this.orig.A; this.fw = this.orig.fw; this.fh = this.orig.fh; }
+        this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
+        this._applyFrame(); this._applyMedia(true); this._centerInView();
+        this.showControls(); this.scheduleHide();
     }
 
     /* ---- mode switches ---- */
@@ -349,7 +386,7 @@ class FloatItem {
         const set = (k, x, y) => Object.assign(this.resizeHandles[k].style, { left: x + 'px', top: y + 'px' });
         set('nw', 0, 0); set('ne', this.fw, 0); set('sw', 0, this.fh); set('se', this.fw, this.fh);
         if (this.resizeActions) Object.assign(this.resizeActions.style,
-            { left: (this.fw / 2) + 'px', top: clamp(this.fh - 46, 6, this.fh - 46) + 'px' });
+            { left: (this.fw / 2) + 'px', top: (this.fh - 46) + 'px' });
     }
     _resizeCornerDown(e, pos) {
         e.preventDefault(); e.stopPropagation();
@@ -374,6 +411,7 @@ class FloatItem {
         const up = () => {
             window.removeEventListener('pointermove', move);
             window.removeEventListener('pointerup', up);
+            this._clampWindowIntoView(); this._renderResize();
         };
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
@@ -456,7 +494,6 @@ class FloatItem {
         if (this.cropActions) {
             Object.assign(this.cropActions.style, { left: ((l + rx) / 2) + 'px', top: clamp(by - 46, t + 6, h - 46) + 'px' });
         }
-        // controls follow the crop rect's top-right corner during crop
         this.controls.style.top = (t + 6) + 'px';
         this.controls.style.right = (r + 6) + 'px';
     }
@@ -504,12 +541,10 @@ class FloatItem {
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
     }
-
     _exitCrop(apply) {
         if (apply) {
             const { l, t, r, b } = this.crop;
             const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
-            // shrink the window to the crop rect; image keeps its size, offset shifts
             this.ox -= l * this.fw;
             this.oy -= t * this.fh;
             this.win.style.left = (left + l * this.fw) + 'px';
@@ -517,6 +552,7 @@ class FloatItem {
             this.fw = this.fw * (1 - l - r);
             this.fh = this.fh * (1 - t - b);
             this._applyFrame(); this._clampOffset(); this._applyMedia();
+            this._clampWindowIntoView();
         }
         this.cropLayer?.remove();
         this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = this.cropMove = null;
@@ -550,10 +586,6 @@ class FloatItem {
 
     _onDown(e) {
         if (this.mode === 'crop') return;
-        // ignore stray events fired right after opening (mobile compat click/pointer that
-        // would otherwise grab & fling the window)
-        if (Date.now() - this.bornAt < 300) { try { e.preventDefault(); } catch { } return; }
-        this.userTouched = true;
         e.preventDefault();
         this.win.setPointerCapture?.(e.pointerId);
         this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -603,7 +635,7 @@ class FloatItem {
             if (this.mode === 'locked') this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
             else {
                 this.scaleAround(mid.x, mid.y, ratio);
-                this.pinch.dist = dist; // incremental for free/resize scaling
+                this.pinch.dist = dist;
                 if (this.mode === 'resize') this._renderResize();
             }
             return;
@@ -620,6 +652,10 @@ class FloatItem {
             this.dragStart.left += dx; this.dragStart.top += dy;
             this.win.style.left = this.dragStart.left + 'px';
             this.win.style.top = this.dragStart.top + 'px';
+            this._clampWindowIntoView();
+            this.dragStart.left = parseFloat(this.win.style.left) || 0;
+            this.dragStart.top = parseFloat(this.win.style.top) || 0;
+            if (this.mode === 'resize') this._renderResize();
         } else if (this.mode === 'locked' && (this.holdActive || this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5)) {
             this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
         }
@@ -649,7 +685,7 @@ class FloatItem {
                 this._clampOffset(); this._applyMedia(true);
                 this.holdActive = false; this.persist = null;
             } else if (this.downInfo && !this.downInfo.moved && (Date.now() - this.downInfo.t) < TAP_MAX_MS) {
-                this._handleTap(e.clientX, e.clientY);
+                this._handleTap(e.clientX);
             }
         }
         this.scheduleHide();
@@ -675,7 +711,18 @@ class FloatItem {
         }
     }
 
+    _exportState() {
+        return {
+            A: this.A, fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy,
+            left: parseFloat(this.win.style.left) || 0, top: parseFloat(this.win.style.top) || 0,
+            mode: this._baseMode(),
+        };
+    }
+
     close() {
+        if (this.mode === 'crop') this._exitCrop(false);
+        if (this.mode === 'resize') this._exitResize(false);
+        try { FloatItem.saved[this.url] = this._exportState(); } catch { }
         this._cancelHold();
         if (this.singleTapTimer) clearTimeout(this.singleTapTimer);
         if (this.fadeTimer) clearTimeout(this.fadeTimer);
@@ -684,12 +731,11 @@ class FloatItem {
     }
 }
 FloatItem._spawn = 0;
+FloatItem.saved = {};
 
 /* ------------------------------------------------------------------ */
 
-/* Replicates ST's native full-res avatar resolution (script.js ".mes .avatar" handler):
-   thumbnail "/thumbnail?type=avatar&file=NAME" → "/characters/NAME" (char) or
-   "/User Avatars/NAME" (user/persona). Returns the thumb unchanged if it's not a thumbnail. */
+/* Replicates ST's native full-res avatar resolution. */
 function avatarFullRes(thumb, mes) {
     if (!thumb || thumb.startsWith('data:') || /^\/?img\//.test(thumb)) return thumb;
     const i = thumb.lastIndexOf('=');
@@ -738,15 +784,6 @@ function resolveMedia(target) {
 let touchStart = null;
 let openLock = 0;
 
-function tryOpenFrom(target) {
-    if (!target || !target.closest) return false;
-    if (target.closest('#mediaviewer_layer')) return false;
-    const info = resolveMedia(target);
-    if (!info || !info.url) return false;
-    new FloatItem(info);
-    return true;
-}
-
 function onTouchStartCap(e) {
     if (e.touches && e.touches.length === 1) {
         const t = e.touches[0];
@@ -755,33 +792,32 @@ function onTouchStartCap(e) {
         touchStart = null;
     }
 }
-
 function onTouchEndCap(e) {
     if (!getSettings().enabled || !touchStart) return;
     const t = e.changedTouches[0];
     const moved = Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y);
     const dt = Date.now() - touchStart.time;
     touchStart = null;
-    if (moved > 14 || dt > 600) return; // not a clean tap
-    // resolve from the element under the finger (e.target can be stale on some mobiles)
+    if (moved > 14 || dt > 600) return;
     const el = document.elementFromPoint(t.clientX, t.clientY) || e.target;
     if (!el || (el.closest && el.closest('#mediaviewer_layer'))) return;
-    if (!resolveMedia(el)) return;
+    const info = resolveMedia(el);
+    if (!info || !info.url) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     openLock = Date.now();
-    tryOpenFrom(el);
+    new FloatItem(info);
 }
-
 function onCaptureClick(e) {
     if (!getSettings().enabled) return;
     const t = e.target;
     if (!t || !t.closest || t.closest('#mediaviewer_layer')) return;
-    if (!resolveMedia(t)) return;
+    const info = resolveMedia(t);
+    if (!info || !info.url) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    if (Date.now() - openLock < 700) return; // already opened on touchend
-    tryOpenFrom(t);
+    if (Date.now() - openLock < 700) return;
+    new FloatItem(info);
 }
 
 let installed = false;
