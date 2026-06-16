@@ -43,10 +43,11 @@
     pointer-events: none;
     -webkit-user-drag: none;
     user-select: none;
+    transition: transform 0.1s ease-out;   /* smooth zoom & pan */
 }
 
 .mv_media.mv_anim {
-    transition: transform 0.18s ease-out;
+    transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .mv_win.mv_locked {
@@ -111,7 +112,8 @@
     color: #000;
 }
 
-/* ---- crop mode (NOT clipped — sits above the clipped viewport) ---- */
+/* ---- resize / crop overlays (NOT clipped — sit above the clipped viewport) ---- */
+.mv_resize,
 .mv_crop {
     position: absolute;
     inset: 0;
