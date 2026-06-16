@@ -8,15 +8,14 @@
  * No backdrop dim: the layer is click-through, the page behind stays visible/usable, and
  * ST swipes keep working (windows live outside #sheld + data-swipe-ignore).
  *
- * Modes per window:
- *   free   : drag to move, pinch / wheel to resize the window. (default)
- *   locked : window frozen. image — hold = temporary zoom (revert on release), two-finger /
- *            wheel = persistent zoom (bounded, pan clamped). video — tap = play/pause,
- *            double-tap left = -5s / right = +5s, hold = zoom. A quick tap only reveals controls.
- *   resize : 4 corner handles, proportional (aspect-locked) window scaling.
- *   crop   : drag edges/corners to crop (visual clip), apply / cancel.
+ * Geometry model (so the window ALWAYS equals what you see — crop shrinks the window):
+ *   frame  : fw × fh   (the visible window box; overflow hidden)
+ *   image  : iw × ih   (the displayed media), offset (ox, oy) inside the frame
+ *   uncropped & unzoomed → iw=fw, ih=fh, ox=oy=0 (image exactly fills frame)
  *
- * Controls (top-right): lock / resize / crop / close — desktop on hover, mobile on touch.
+ * Modes: free (drag move / pinch / wheel resize) · locked (hold = temp zoom, two-finger /
+ * wheel = persistent zoom, video tap=play/pause & double-tap ±5s) · resize (4 corner
+ * handles, aspect-locked) · crop (drag edges, apply shrinks the window to the crop).
  */
 
 import { eventSource, event_types, saveSettingsDebounced } from '../../../../script.js';
@@ -30,7 +29,7 @@ const DEFAULTS = {
     avatars: true,
     gallery: true,
     fadeMs: 1800,
-    holdZoom: 1.7,     // gentle fixed magnification for press-hold zoom
+    holdZoom: 1.7,
     maxZoom: 6,
     imageHoldMs: 190,
     videoHoldMs: 300,
@@ -41,10 +40,10 @@ const TAP_MAX_MS = 250;
 const TAP_MOVE_SLOP = 8;
 const DBL_TAP_MS = 300;
 const MIN_WIN = 90;
-const MIN_CROP_PX = 130;   // smallest crop region — keeps the action buttons visible
+const MIN_CROP_PX = 175;   // smallest crop region — keeps both action buttons inside
 const WHEEL_STEP = 1.1;
 
-let zCounter = 10060;
+let zBase = 2147482000;
 let layerEl = null;
 
 function getSettings() {
@@ -52,7 +51,7 @@ function getSettings() {
     return extension_settings[MODULE];
 }
 
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const clamp = (v, lo, hi) => (hi < lo ? lo : Math.min(hi, Math.max(lo, v)));
 
 function isVideoUrl(url) {
     try {
@@ -61,15 +60,12 @@ function isVideoUrl(url) {
     } catch { return false; }
 }
 
-/* Layout viewport — matches the fixed `inset:0` layer exactly, and is correct under
-   DevTools device emulation (visualViewport is not). */
+/* Visible viewport in CSS px — matches the fixed `inset:0` layer (and works under
+   DevTools device emulation, where visualViewport misreports). */
 function viewportBox() {
-    const de = document.documentElement;
     return {
-        x: 0,
-        y: 0,
-        w: de.clientWidth || window.innerWidth,
-        h: de.clientHeight || window.innerHeight,
+        w: window.innerWidth || document.documentElement.clientWidth,
+        h: window.innerHeight || document.documentElement.clientHeight,
     };
 }
 
@@ -84,13 +80,16 @@ function ensureLayer() {
 /* ------------------------------------------------------------------ */
 
 class FloatItem {
-    constructor({ url, type, title }) {
+    constructor({ url, type }) {
         this.url = url;
         this.type = type;
-        this.title = title || '';
         this.mode = 'free';
 
-        this.z = 1; this.tx = 0; this.ty = 0;
+        this.A = 1;                 // aspect ratio
+        this.fw = 0; this.fh = 0;   // frame (window) size
+        this.iw = 0; this.ih = 0;   // displayed image size
+        this.ox = 0; this.oy = 0;   // image offset within frame
+
         this.crop = { t: 0, r: 0, b: 0, l: 0 };
         this.cropBackup = null;
 
@@ -104,14 +103,13 @@ class FloatItem {
         this.singleTapTimer = null;
         this.fadeTimer = null;
 
-        this.aspect = 1;
         this.spawnIdx = FloatItem._spawn++ % 6;
         this._build();
     }
 
     _build() {
         const win = document.createElement('div');
-        win.className = 'mv_win';
+        win.className = 'mv_win mv_in';
         win.tabIndex = 0;
         win.setAttribute('data-swipe-ignore', 'true');
 
@@ -122,11 +120,8 @@ class FloatItem {
         if (this.type === 'video') {
             media = document.createElement('video');
             media.src = this.url;
-            media.autoplay = true;
-            media.loop = true;
-            media.playsInline = true;
-            media.setAttribute('playsinline', '');
-            media.controls = false;
+            media.autoplay = true; media.loop = true; media.playsInline = true;
+            media.setAttribute('playsinline', ''); media.controls = false;
         } else {
             media = document.createElement('img');
             media.src = this.url;
@@ -148,16 +143,14 @@ class FloatItem {
         controls.append(this.btnLock, this.btnResize, this.btnCrop, this.btnClose);
         win.appendChild(controls);
 
-        this.win = win;
-        this.viewport = viewport;
-        this.media = media;
-        this.controls = controls;
-
-        this._initSizeAndPlace();
-        this._bindGestures();
+        this.win = win; this.viewport = viewport; this.media = media; this.controls = controls;
 
         ensureLayer().appendChild(win);
         this.bringToFront();
+        win.addEventListener('animationend', () => win.classList.remove('mv_in'), { once: true });
+
+        this._initSizeAndPlace();
+        this._bindGestures();
     }
 
     _mkBtn(icon, title, onClick) {
@@ -174,16 +167,17 @@ class FloatItem {
 
     _initSizeAndPlace() {
         const place = (natW, natH) => {
-            this.aspect = (natW && natH) ? natW / natH : 1;
+            this.A = (natW && natH) ? natW / natH : 1;
             const vb = viewportBox();
             const maxW = Math.min(vb.w * 0.92, 1000);
             const maxH = vb.h * 0.88;
             let w = Math.min(natW || maxW, maxW);
-            let h = w / this.aspect;
-            if (h > maxH) { h = maxH; w = h * this.aspect; }
+            let h = w / this.A;
+            if (h > maxH) { h = maxH; w = h * this.A; }
             w = clamp(w, MIN_WIN, maxW);
-            this._setWinSize(w);
-            this._centerInView();
+            this.fw = w; this.fh = w / this.A;
+            this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
+            this._applyFrame(); this._applyMedia(); this._centerInView();
         };
 
         if (this.type === 'video') {
@@ -206,29 +200,32 @@ class FloatItem {
         }
     }
 
-    _setWinSize(w) {
-        this.winW = w;
-        this.win.style.width = w + 'px';
-        this.win.style.height = (w / this.aspect) + 'px';
+    _applyFrame() {
+        this.win.style.width = this.fw + 'px';
+        this.win.style.height = this.fh + 'px';
     }
-
-    _winH() { return this.winW / this.aspect; }
+    _applyMedia(animate = false) {
+        this.media.classList.toggle('mv_anim', !!animate);
+        this.media.style.width = this.iw + 'px';
+        this.media.style.height = this.ih + 'px';
+        this.media.style.transform = `translate(${this.ox}px, ${this.oy}px)`;
+        if (animate) setTimeout(() => this.media.classList.remove('mv_anim'), 240);
+    }
 
     _centerInView() {
         const vb = viewportBox();
-        const w = this.winW, h = this._winH();
-        const off = this.spawnIdx * 22;
-        let left = (vb.w - w) / 2 + off;
-        let top = (vb.h - h) / 2 + off;
-        left = clamp(left, 4, Math.max(4, vb.w - w - 4));
-        top = clamp(top, 4, Math.max(4, vb.h - h - 4));
-        if (!isFinite(left)) left = 4;
-        if (!isFinite(top)) top = 4;
+        const off = this.spawnIdx * 20;
+        let left = (vb.w - this.fw) / 2 + off;
+        let top = (vb.h - this.fh) / 2 + off;
+        left = clamp(left, 4, vb.w - this.fw - 4);
+        top = clamp(top, 4, vb.h - this.fh - 4);
+        if (!isFinite(left)) left = 6;
+        if (!isFinite(top)) top = 6;
         this.win.style.left = left + 'px';
         this.win.style.top = top + 'px';
     }
 
-    bringToFront() { this.win.style.zIndex = String(++zCounter); }
+    bringToFront() { this.win.style.zIndex = String(++zBase); }
 
     showControls() {
         this.controls.classList.add('mv_show');
@@ -241,26 +238,35 @@ class FloatItem {
         }, getSettings().fadeMs);
     }
 
-    applyTransform(animate = false) {
-        this.media.classList.toggle('mv_anim', !!animate);
-        this.media.style.transform = `translate(${this.tx}px, ${this.ty}px) scale(${this.z})`;
-        if (animate) setTimeout(() => this.media.classList.remove('mv_anim'), 240);
+    _minImgW() { return Math.max(this.fw, this.fh * this.A); }
+    _clampOffset() {
+        this.ox = (this.iw <= this.fw) ? (this.fw - this.iw) / 2 : clamp(this.ox, this.fw - this.iw, 0);
+        this.oy = (this.ih <= this.fh) ? (this.fh - this.ih) / 2 : clamp(this.oy, this.fh - this.ih, 0);
     }
 
-    clampPan() {
-        const vw = this.winW, vh = this._winH();
-        this.tx = clamp(this.tx, Math.min(0, vw - this.z * vw), 0);
-        this.ty = clamp(this.ty, Math.min(0, vh - this.z * vh), 0);
-    }
-
-    zoomAt(screenX, screenY, newZ, animate = false) {
+    /* zoom the image to a focal screen point, by setting a new image width */
+    zoomTo(screenX, screenY, newIw, animate = false) {
         const rect = this.viewport.getBoundingClientRect();
         const px = screenX - rect.left, py = screenY - rect.top;
-        const mx = (px - this.tx) / this.z, my = (py - this.ty) / this.z;
-        this.z = clamp(newZ, 1, getSettings().maxZoom);
-        this.tx = px - this.z * mx; this.ty = py - this.z * my;
-        this.clampPan();
-        this.applyTransform(animate);
+        newIw = clamp(newIw, this._minImgW(), this._minImgW() * getSettings().maxZoom);
+        const ratio = newIw / this.iw;
+        this.ox = px - (px - this.ox) * ratio;
+        this.oy = py - (py - this.oy) * ratio;
+        this.iw = newIw; this.ih = newIw / this.A;
+        this._clampOffset();
+        this._applyMedia(animate);
+    }
+
+    /* scale the whole thing (frame + image) by a ratio around a focal screen point */
+    scaleAround(cx, cy, ratio) {
+        const vb = viewportBox();
+        const newFw = clamp(this.fw * ratio, MIN_WIN, vb.w * 3);
+        const r = newFw / this.fw;
+        const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
+        this.fw *= r; this.fh *= r; this.iw *= r; this.ih *= r; this.ox *= r; this.oy *= r;
+        this.win.style.left = (cx - (cx - left) * r) + 'px';
+        this.win.style.top = (cy - (cy - top) * r) + 'px';
+        this._applyFrame(); this._applyMedia();
     }
 
     /* ---- mode switches ---- */
@@ -272,7 +278,6 @@ class FloatItem {
             this.win.classList.remove('mv_locked');
             this.btnLock.classList.remove('mv_active');
             this.btnLock.innerHTML = '<i class="fa-solid fa-lock-open"></i>';
-            this.z = 1; this.tx = 0; this.ty = 0; this.applyTransform(true);
         } else {
             this.mode = 'locked';
             this.win.classList.add('mv_locked');
@@ -281,21 +286,16 @@ class FloatItem {
         }
         this.showControls(); this.scheduleHide();
     }
-
     _baseMode() { return (this.mode === 'free' || this.mode === 'locked') ? this.mode : 'free'; }
 
     /* ---- proportional resize ---- */
     toggleResize() {
         if (this.mode === 'resize') { this._exitResize(); return; }
-        this._enterResize();
-    }
-    _enterResize() {
         if (this.mode === 'crop') this._exitCrop(false);
         this.prevMode = this._baseMode();
         this.mode = 'resize';
         this.btnResize.classList.add('mv_active');
         this.showControls();
-
         const layer = document.createElement('div');
         layer.className = 'mv_resize';
         const handles = {};
@@ -303,41 +303,36 @@ class FloatItem {
             const h = document.createElement('div');
             h.className = 'mv_handle mv_h_' + pos;
             h.addEventListener('pointerdown', e => this._resizeCornerDown(e, pos));
-            layer.appendChild(h);
-            handles[pos] = h;
+            layer.appendChild(h); handles[pos] = h;
         });
         this.win.appendChild(layer);
-        this.resizeLayer = layer;
-        this.resizeHandles = handles;
+        this.resizeLayer = layer; this.resizeHandles = handles;
         this._renderResize();
     }
     _renderResize() {
         if (!this.resizeHandles) return;
-        const w = this.winW, h = this._winH();
         const set = (k, x, y) => Object.assign(this.resizeHandles[k].style, { left: x + 'px', top: y + 'px' });
-        set('nw', 0, 0); set('ne', w, 0); set('sw', 0, h); set('se', w, h);
+        set('nw', 0, 0); set('ne', this.fw, 0); set('sw', 0, this.fh); set('se', this.fw, this.fh);
     }
     _resizeCornerDown(e, pos) {
         e.preventDefault(); e.stopPropagation();
         const sx = e.clientX;
-        const sLeft = parseFloat(this.win.style.left) || 0;
-        const sTop = parseFloat(this.win.style.top) || 0;
-        const sW = this.winW, sH = this._winH();
-        const right = sLeft + sW, bottom = sTop + sH;
+        const sLeft = parseFloat(this.win.style.left) || 0, sTop = parseFloat(this.win.style.top) || 0;
+        const sFw = this.fw, sFh = this.fh, sIw = this.iw, sIh = this.ih, sOx = this.ox, sOy = this.oy;
+        const right = sLeft + sFw, bottom = sTop + sFh;
         const vb = viewportBox();
         const move = ev => {
             const dx = ev.clientX - sx;
-            let newW = (pos === 'se' || pos === 'ne') ? sW + dx : sW - dx;
-            newW = clamp(newW, MIN_WIN, vb.w * 3);
-            this._setWinSize(newW);
-            const newH = this._winH();
+            let newFw = (pos === 'se' || pos === 'ne') ? sFw + dx : sFw - dx;
+            newFw = clamp(newFw, MIN_WIN, vb.w * 3);
+            const r = newFw / sFw;
+            this.fw = sFw * r; this.fh = sFh * r; this.iw = sIw * r; this.ih = sIh * r; this.ox = sOx * r; this.oy = sOy * r;
             let nl = sLeft, nt = sTop;
-            if (pos === 'nw') { nl = right - newW; nt = bottom - newH; }
-            else if (pos === 'ne') { nl = sLeft; nt = bottom - newH; }
-            else if (pos === 'sw') { nl = right - newW; nt = sTop; }
-            this.win.style.left = nl + 'px';
-            this.win.style.top = nt + 'px';
-            this._renderResize();
+            if (pos === 'nw') { nl = right - this.fw; nt = bottom - this.fh; }
+            else if (pos === 'ne') { nt = bottom - this.fh; }
+            else if (pos === 'sw') { nl = right - this.fw; }
+            this.win.style.left = nl + 'px'; this.win.style.top = nt + 'px';
+            this._applyFrame(); this._applyMedia(); this._renderResize();
         };
         const up = () => {
             window.removeEventListener('pointermove', move);
@@ -360,29 +355,28 @@ class FloatItem {
         if (this.mode === 'resize') this._exitResize();
         this._enterCrop();
     }
-
     _enterCrop() {
         this.prevMode = this._baseMode();
         this.mode = 'crop';
         this.btnCrop.classList.add('mv_active');
-        this.cropBackup = { ...this.crop };
+        this.crop = { t: 0, r: 0, b: 0, l: 0 };
         this.showControls();
 
         const layer = document.createElement('div');
         layer.className = 'mv_crop';
+        const dim = document.createElement('div');
+        dim.className = 'mv_crop_dim';
         const shade = document.createElement('div');
         shade.className = 'mv_shade';
-        layer.appendChild(shade);
-
+        dim.appendChild(shade);
+        layer.appendChild(dim);
         const handles = {};
         ['nw', 'ne', 'sw', 'se', 'n', 's', 'w', 'e'].forEach(pos => {
             const h = document.createElement('div');
             h.className = 'mv_handle mv_h_' + pos;
             h.addEventListener('pointerdown', e => this._cropHandleDown(e, pos));
-            layer.appendChild(h);
-            handles[pos] = h;
+            layer.appendChild(h); handles[pos] = h;
         });
-
         const actions = document.createElement('div');
         actions.className = 'mv_crop_actions';
         const ok = this._mkBtn('fa-check', 'Apply', () => this._exitCrop(true));
@@ -396,9 +390,8 @@ class FloatItem {
         this.cropLayer = layer; this.cropShade = shade; this.cropHandles = handles;
         this._renderCrop();
     }
-
     _renderCrop() {
-        const w = this.winW, h = this._winH();
+        const w = this.fw, h = this.fh;
         const l = this.crop.l * w, r = this.crop.r * w, t = this.crop.t * h, b = this.crop.b * h;
         const rx = w - r, by = h - b;
         if (this.cropShade) Object.assign(this.cropShade.style,
@@ -410,24 +403,19 @@ class FloatItem {
             set('n', cx, t); set('s', cx, by); set('w', l, cy); set('e', rx, cy);
         }
         if (this.cropActions) {
-            const cx = (l + rx) / 2;
-            const ay = clamp(by - 46, t + 6, h - 46);
-            Object.assign(this.cropActions.style, { left: cx + 'px', top: ay + 'px' });
+            Object.assign(this.cropActions.style, { left: ((l + rx) / 2) + 'px', top: clamp(by - 46, t + 6, h - 46) + 'px' });
         }
-        // move the top control cluster to follow the crop rect's top-right corner
+        // controls follow the crop rect's top-right corner during crop
         this.controls.style.top = (t + 6) + 'px';
         this.controls.style.right = (r + 6) + 'px';
-        // visual crop preview on the VIEWPORT only — controls/handles stay reachable
-        this.viewport.style.clipPath = `inset(${t}px ${r}px ${b}px ${l}px round 10px)`;
     }
-
     _cropHandleDown(e, pos) {
         e.preventDefault(); e.stopPropagation();
-        const w = this.winW, h = this._winH();
+        const w = this.fw, h = this.fh;
         const sx = e.clientX, sy = e.clientY;
         const start = { ...this.crop };
-        const minFx = clamp(MIN_CROP_PX / w, 0.05, 0.9);
-        const minFy = clamp(MIN_CROP_PX / h, 0.05, 0.9);
+        const minFx = clamp(MIN_CROP_PX / w, 0.05, 0.95);
+        const minFy = clamp(MIN_CROP_PX / h, 0.05, 0.95);
         const move = ev => {
             const dx = (ev.clientX - sx) / w, dy = (ev.clientY - sy) / h;
             const c = { ...start };
@@ -444,17 +432,22 @@ class FloatItem {
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
     }
-
     _exitCrop(apply) {
-        if (!apply && this.cropBackup) this.crop = { ...this.cropBackup };
-        const w = this.winW, h = this._winH();
-        const { t, r, b, l } = this.crop;
-        this.viewport.style.clipPath = (t || r || b || l)
-            ? `inset(${t * h}px ${r * w}px ${b * h}px ${l * w}px round 10px)` : '';
+        if (apply) {
+            const { l, t, r, b } = this.crop;
+            const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
+            // shrink the window to the crop rect; image keeps its size, offset shifts
+            this.ox -= l * this.fw;
+            this.oy -= t * this.fh;
+            this.win.style.left = (left + l * this.fw) + 'px';
+            this.win.style.top = (top + t * this.fh) + 'px';
+            this.fw = this.fw * (1 - l - r);
+            this.fh = this.fh * (1 - t - b);
+            this._applyFrame(); this._clampOffset(); this._applyMedia();
+        }
         this.cropLayer?.remove();
         this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = null;
         this.btnCrop.classList.remove('mv_active');
-        // restore the control cluster to the window corner
         this.controls.style.top = '';
         this.controls.style.right = '';
         this.mode = this.prevMode || 'free';
@@ -477,20 +470,9 @@ class FloatItem {
         e.preventDefault(); e.stopPropagation();
         this.bringToFront();
         const f = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;
-        if (this.mode === 'locked') this.zoomAt(e.clientX, e.clientY, this.z * f, true);
-        else this._resizeAround(e.clientX, e.clientY, this.winW * f);
+        if (this.mode === 'locked') this.zoomTo(e.clientX, e.clientY, this.iw * f, true);
+        else this.scaleAround(e.clientX, e.clientY, f);
         this.showControls(); this.scheduleHide();
-    }
-
-    _resizeAround(cx, cy, newW) {
-        const vb = viewportBox();
-        newW = clamp(newW, MIN_WIN, vb.w * 3);
-        const oldW = this.winW, oldH = this._winH();
-        const left = parseFloat(this.win.style.left) || 0, top = parseFloat(this.win.style.top) || 0;
-        this._setWinSize(newW);
-        const newH = this._winH();
-        this.win.style.left = (cx - (cx - left) * (newW / oldW)) + 'px';
-        this.win.style.top = (cy - (cy - top) * (newH / oldH)) + 'px';
     }
 
     _onDown(e) {
@@ -516,11 +498,10 @@ class FloatItem {
             this.holdTimer = setTimeout(() => this._engageHold(e.clientX, e.clientY), delay);
         }
     }
-
     _engageHold(x, y) {
-        this.persist = { z: this.z, tx: this.tx, ty: this.ty };
+        this.persist = { iw: this.iw, ox: this.ox, oy: this.oy };
         this.holdActive = true;
-        this.zoomAt(x, y, this.z * getSettings().holdZoom, true);
+        this.zoomTo(x, y, this.iw * getSettings().holdZoom, true);
     }
     _cancelHold() { if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; } }
 
@@ -528,7 +509,7 @@ class FloatItem {
         const pts = [...this.pointers.values()];
         this.pinch = {
             dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
-            z0: this.z, w0: this.winW,
+            iw0: this.iw,
         };
         this.holdActive = false; this.persist = null;
     }
@@ -542,8 +523,11 @@ class FloatItem {
             const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
             const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
             const ratio = dist / (this.pinch.dist || dist);
-            if (this.mode === 'locked') this.zoomAt(mid.x, mid.y, this.pinch.z0 * ratio);
-            else if (this.mode === 'free') this._resizeAround(mid.x, mid.y, this.pinch.w0 * ratio);
+            if (this.mode === 'locked') this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
+            else if (this.mode === 'free') {
+                this.scaleAround(mid.x, mid.y, ratio);
+                this.pinch.dist = dist; // incremental for free resize
+            }
             return;
         }
 
@@ -558,8 +542,8 @@ class FloatItem {
             this.dragStart.left += dx; this.dragStart.top += dy;
             this.win.style.left = this.dragStart.left + 'px';
             this.win.style.top = this.dragStart.top + 'px';
-        } else if (this.mode === 'locked' && (this.holdActive || this.z > 1)) {
-            this.tx += dx; this.ty += dy; this.clampPan(); this.applyTransform();
+        } else if (this.mode === 'locked' && (this.holdActive || this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5)) {
+            this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
         }
     }
 
@@ -582,8 +566,9 @@ class FloatItem {
 
         if (this.mode === 'locked') {
             if (this.holdActive && this.persist) {
-                this.z = this.persist.z; this.tx = this.persist.tx; this.ty = this.persist.ty;
-                this.clampPan(); this.applyTransform(true);
+                this.iw = this.persist.iw; this.ih = this.iw / this.A;
+                this.ox = this.persist.ox; this.oy = this.persist.oy;
+                this._clampOffset(); this._applyMedia(true);
                 this.holdActive = false; this.persist = null;
             } else if (this.downInfo && !this.downInfo.moved && (Date.now() - this.downInfo.t) < TAP_MAX_MS) {
                 this._handleTap(e.clientX, e.clientY);
@@ -593,7 +578,7 @@ class FloatItem {
         this.downInfo = null;
     }
 
-    _handleTap(x, y) {
+    _handleTap(x) {
         if (this.type !== 'video') return;
         const now = Date.now();
         if (now - this.lastTap < DBL_TAP_MS) {
@@ -647,7 +632,7 @@ function resolveMedia(target) {
         if (cont) {
             const el = cont.matches?.('img, video') ? cont : cont.querySelector('img, video');
             const url = srcOf(el);
-            if (url) return { url, type: (el.tagName === 'VIDEO' || isVideoUrl(url)) ? 'video' : 'image' };
+            if (url) return { url, type: (el && el.tagName === 'VIDEO') || isVideoUrl(url) ? 'video' : 'image' };
         }
     }
     return null;

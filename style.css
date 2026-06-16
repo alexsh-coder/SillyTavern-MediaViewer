@@ -4,9 +4,17 @@
 #mediaviewer_layer {
     position: fixed;
     inset: 0;
-    z-index: 10050;
+    z-index: 2147481000; /* above ST panels/drawers */
     pointer-events: none; /* click-through — chat/text behind stays usable, swipes intact */
     overflow: hidden;
+}
+
+@keyframes mv_pop {
+    from { opacity: 0; transform: scale(0.9); }
+    to   { opacity: 1; transform: scale(1); }
+}
+.mv_win.mv_in {
+    animation: mv_pop 0.18s ease-out;
 }
 
 .mv_win {
@@ -35,19 +43,18 @@
     position: absolute;
     left: 0;
     top: 0;
-    width: 100%;
-    height: 100%;
     display: block;
-    object-fit: fill;            /* viewport matches media aspect, so no distortion */
-    transform-origin: 0 0;
+    transform-origin: 0 0;       /* size (width/height) + translate are set inline in JS */
     pointer-events: none;
     -webkit-user-drag: none;
     user-select: none;
-    transition: transform 0.1s ease-out;   /* smooth zoom & pan */
+    transition: width 0.1s ease-out, height 0.1s ease-out, transform 0.1s ease-out; /* smooth zoom & pan */
 }
 
 .mv_media.mv_anim {
-    transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition: width 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+                height 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+                transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .mv_win.mv_locked {
@@ -121,11 +128,20 @@
     pointer-events: none;
 }
 
+.mv_crop_dim {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;            /* clips the dim shadow to the window */
+    pointer-events: none;
+    border-radius: inherit;
+}
+
 .mv_shade {
     position: absolute;
     border: 1px dashed rgba(255, 255, 255, 0.95);
     box-sizing: border-box;
     pointer-events: none;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); /* dims the area outside the crop (clipped by viewport) */
 }
 
 .mv_handle {
