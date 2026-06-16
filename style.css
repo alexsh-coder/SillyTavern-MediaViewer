@@ -18,7 +18,7 @@
 }
 
 .mv_win {
-    position: absolute;
+    position: fixed;
     pointer-events: auto;
     touch-action: none;
     user-select: none;
@@ -134,6 +134,14 @@
     overflow: hidden;            /* clips the dim shadow to the window */
     pointer-events: none;
     border-radius: inherit;
+}
+
+.mv_crop_move {
+    position: absolute;
+    pointer-events: auto;
+    cursor: move;
+    touch-action: none;
+    z-index: 8;             /* above the dim, below the edge handles */
 }
 
 .mv_shade {

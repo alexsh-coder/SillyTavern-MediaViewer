@@ -272,7 +272,7 @@ class FloatItem {
     /* ---- mode switches ---- */
     toggleLock() {
         if (this.mode === 'crop') this._exitCrop(false);
-        if (this.mode === 'resize') this._exitResize();
+        if (this.mode === 'resize') this._exitResize(true);
         if (this.mode === 'locked') {
             this.mode = 'free';
             this.win.classList.remove('mv_locked');
@@ -290,12 +290,16 @@ class FloatItem {
 
     /* ---- proportional resize ---- */
     toggleResize() {
-        if (this.mode === 'resize') { this._exitResize(); return; }
+        if (this.mode === 'resize') { this._exitResize(true); return; }
         if (this.mode === 'crop') this._exitCrop(false);
         this.prevMode = this._baseMode();
         this.mode = 'resize';
         this.btnResize.classList.add('mv_active');
         this.showControls();
+        this.geomBackup = {
+            fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy,
+            left: parseFloat(this.win.style.left) || 0, top: parseFloat(this.win.style.top) || 0,
+        };
         const layer = document.createElement('div');
         layer.className = 'mv_resize';
         const handles = {};
@@ -305,6 +309,14 @@ class FloatItem {
             h.addEventListener('pointerdown', e => this._resizeCornerDown(e, pos));
             layer.appendChild(h); handles[pos] = h;
         });
+        const actions = document.createElement('div');
+        actions.className = 'mv_crop_actions';
+        const ok = this._mkBtn('fa-check', 'Apply', () => this._exitResize(true));
+        const cancel = this._mkBtn('fa-xmark', 'Cancel', () => this._exitResize(false));
+        ok.classList.add('mv_active');
+        actions.append(ok, cancel);
+        layer.appendChild(actions);
+        this.resizeActions = actions;
         this.win.appendChild(layer);
         this.resizeLayer = layer; this.resizeHandles = handles;
         this._renderResize();
@@ -313,6 +325,8 @@ class FloatItem {
         if (!this.resizeHandles) return;
         const set = (k, x, y) => Object.assign(this.resizeHandles[k].style, { left: x + 'px', top: y + 'px' });
         set('nw', 0, 0); set('ne', this.fw, 0); set('sw', 0, this.fh); set('se', this.fw, this.fh);
+        if (this.resizeActions) Object.assign(this.resizeActions.style,
+            { left: (this.fw / 2) + 'px', top: clamp(this.fh - 46, 6, this.fh - 46) + 'px' });
     }
     _resizeCornerDown(e, pos) {
         e.preventDefault(); e.stopPropagation();
@@ -341,9 +355,16 @@ class FloatItem {
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
     }
-    _exitResize() {
+    _exitResize(apply) {
+        if (!apply && this.geomBackup) {
+            const g = this.geomBackup;
+            this.fw = g.fw; this.fh = g.fh; this.iw = g.iw; this.ih = g.ih; this.ox = g.ox; this.oy = g.oy;
+            this.win.style.left = g.left + 'px'; this.win.style.top = g.top + 'px';
+            this._applyFrame(); this._applyMedia();
+        }
+        this.geomBackup = null;
         this.resizeLayer?.remove();
-        this.resizeLayer = this.resizeHandles = null;
+        this.resizeLayer = this.resizeHandles = this.resizeActions = null;
         this.btnResize.classList.remove('mv_active');
         this.mode = this.prevMode || 'free';
         this.scheduleHide();
@@ -352,7 +373,7 @@ class FloatItem {
     /* ---- crop ---- */
     toggleCrop() {
         if (this.mode === 'crop') { this._exitCrop(true); return; }
-        if (this.mode === 'resize') this._exitResize();
+        if (this.mode === 'resize') this._exitResize(true);
         this._enterCrop();
     }
     _enterCrop() {
@@ -370,6 +391,11 @@ class FloatItem {
         shade.className = 'mv_shade';
         dim.appendChild(shade);
         layer.appendChild(dim);
+        const moveZone = document.createElement('div');
+        moveZone.className = 'mv_crop_move';
+        moveZone.addEventListener('pointerdown', e => this._cropMoveDown(e));
+        layer.appendChild(moveZone);
+        this.cropMove = moveZone;
         const handles = {};
         ['nw', 'ne', 'sw', 'se', 'n', 's', 'w', 'e'].forEach(pos => {
             const h = document.createElement('div');
@@ -402,6 +428,8 @@ class FloatItem {
             set('nw', l, t); set('ne', rx, t); set('sw', l, by); set('se', rx, by);
             set('n', cx, t); set('s', cx, by); set('w', l, cy); set('e', rx, cy);
         }
+        if (this.cropMove) Object.assign(this.cropMove.style,
+            { left: l + 'px', top: t + 'px', width: (w - l - r) + 'px', height: (h - t - b) + 'px' });
         if (this.cropActions) {
             Object.assign(this.cropActions.style, { left: ((l + rx) / 2) + 'px', top: clamp(by - 46, t + 6, h - 46) + 'px' });
         }
@@ -432,6 +460,28 @@ class FloatItem {
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
     }
+    _cropMoveDown(e) {
+        e.preventDefault(); e.stopPropagation();
+        const w = this.fw, h = this.fh;
+        const sx = e.clientX, sy = e.clientY;
+        const start = { ...this.crop };
+        const width = 1 - start.l - start.r;
+        const height = 1 - start.t - start.b;
+        const move = ev => {
+            const ddx = (ev.clientX - sx) / w, ddy = (ev.clientY - sy) / h;
+            const nl = clamp(start.l + ddx, 0, 1 - width);
+            const nt = clamp(start.t + ddy, 0, 1 - height);
+            this.crop = { l: nl, r: 1 - width - nl, t: nt, b: 1 - height - nt };
+            this._renderCrop();
+        };
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    }
+
     _exitCrop(apply) {
         if (apply) {
             const { l, t, r, b } = this.crop;
@@ -446,7 +496,7 @@ class FloatItem {
             this._applyFrame(); this._clampOffset(); this._applyMedia();
         }
         this.cropLayer?.remove();
-        this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = null;
+        this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = this.cropMove = null;
         this.btnCrop.classList.remove('mv_active');
         this.controls.style.top = '';
         this.controls.style.right = '';
@@ -466,7 +516,7 @@ class FloatItem {
     }
 
     _onWheel(e) {
-        if (this.mode === 'crop' || this.mode === 'resize') return;
+        if (this.mode === 'crop') return;
         e.preventDefault(); e.stopPropagation();
         this.bringToFront();
         const f = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;
@@ -476,7 +526,7 @@ class FloatItem {
     }
 
     _onDown(e) {
-        if (this.mode === 'crop' || this.mode === 'resize') return;
+        if (this.mode === 'crop') return;
         e.preventDefault();
         this.win.setPointerCapture?.(e.pointerId);
         this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -488,7 +538,7 @@ class FloatItem {
         this.downInfo = { x: e.clientX, y: e.clientY, t: Date.now(), moved: false };
         this.lastPos = { x: e.clientX, y: e.clientY };
 
-        if (this.mode === 'free') {
+        if (this.mode === 'free' || this.mode === 'resize') {
             this.dragStart = {
                 left: parseFloat(this.win.style.left) || 0,
                 top: parseFloat(this.win.style.top) || 0,
@@ -524,9 +574,10 @@ class FloatItem {
             const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
             const ratio = dist / (this.pinch.dist || dist);
             if (this.mode === 'locked') this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
-            else if (this.mode === 'free') {
+            else {
                 this.scaleAround(mid.x, mid.y, ratio);
-                this.pinch.dist = dist; // incremental for free resize
+                this.pinch.dist = dist; // incremental for free/resize scaling
+                if (this.mode === 'resize') this._renderResize();
             }
             return;
         }
@@ -538,7 +589,7 @@ class FloatItem {
             if (!this.downInfo.moved) { this.downInfo.moved = true; if (!this.holdActive) this._cancelHold(); }
         }
 
-        if (this.mode === 'free') {
+        if (this.mode === 'free' || this.mode === 'resize') {
             this.dragStart.left += dx; this.dragStart.top += dy;
             this.win.style.left = this.dragStart.left + 'px';
             this.win.style.top = this.dragStart.top + 'px';
@@ -628,7 +679,9 @@ function resolveMedia(target) {
         }
     }
     if (s.chat) {
-        const cont = target.closest?.('.mes_media_container, .mes_img, .mes_media_enlarge, .mes_video');
+        const cont = target.closest?.(
+            '.mes_text img, .mes_text video, .mes_text p img, .mes_text p video, ' +
+            '.mes_media_container, .mes_img, .mes_media_enlarge, .mes_video');
         if (cont) {
             const el = cont.matches?.('img, video') ? cont : cont.querySelector('img, video');
             const url = srcOf(el);
@@ -638,21 +691,60 @@ function resolveMedia(target) {
     return null;
 }
 
+let touchStart = null;
+let openLock = 0;
+
+function tryOpenFrom(target) {
+    if (!target || !target.closest) return false;
+    if (target.closest('#mediaviewer_layer')) return false;
+    const info = resolveMedia(target);
+    if (!info || !info.url) return false;
+    new FloatItem(info);
+    return true;
+}
+
+function onTouchStartCap(e) {
+    if (e.touches && e.touches.length === 1) {
+        const t = e.touches[0];
+        touchStart = { x: t.clientX, y: t.clientY, time: Date.now() };
+    } else {
+        touchStart = null;
+    }
+}
+
+function onTouchEndCap(e) {
+    if (!getSettings().enabled || !touchStart) return;
+    const t = e.changedTouches[0];
+    const moved = Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y);
+    const dt = Date.now() - touchStart.time;
+    touchStart = null;
+    if (moved > 14 || dt > 600) return; // not a clean tap
+    // resolve from the element under the finger (e.target can be stale on some mobiles)
+    const el = document.elementFromPoint(t.clientX, t.clientY) || e.target;
+    if (!el || (el.closest && el.closest('#mediaviewer_layer'))) return;
+    if (!resolveMedia(el)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    openLock = Date.now();
+    tryOpenFrom(el);
+}
+
 function onCaptureClick(e) {
     if (!getSettings().enabled) return;
     const t = e.target;
-    if (!t || !t.closest) return;
-    if (t.closest('#mediaviewer_layer')) return;
-    const info = resolveMedia(t);
-    if (!info || !info.url) return;
+    if (!t || !t.closest || t.closest('#mediaviewer_layer')) return;
+    if (!resolveMedia(t)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    new FloatItem(info);
+    if (Date.now() - openLock < 700) return; // already opened on touchend
+    tryOpenFrom(t);
 }
 
 let installed = false;
 function installInterception() {
     if (installed) return;
+    document.addEventListener('touchstart', onTouchStartCap, { capture: true, passive: true });
+    document.addEventListener('touchend', onTouchEndCap, { capture: true, passive: false });
     document.addEventListener('click', onCaptureClick, true);
     installed = true;
 }
