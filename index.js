@@ -31,11 +31,14 @@ const DEFAULTS = {
     avatars: true,
     gallery: true,
     fadeMs: 1800,
-    holdZoom: 1.1,
     maxZoom: 6,
     imageHoldMs: 190,
     videoHoldMs: 300,
 };
+
+// Hold-zoom magnification — a code constant (NOT a saved setting) so it always applies,
+// regardless of any stale value persisted in settings.json. Keep it gentle.
+const HOLD_ZOOM = 1.3;
 
 const VIDEO_EXT = ['mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v'];
 const TAP_MAX_MS = 250;
@@ -91,6 +94,7 @@ class FloatItem {
         this.iw = 0; this.ih = 0;
         this.ox = 0; this.oy = 0;
         this.posX = 0; this.posY = 0;
+        this.holdScale = 1; this.holdTX = 0; this.holdTY = 0; this.holdOrigin = '0 0';
         this._placed = false;
         this.orig = null;
 
@@ -236,7 +240,8 @@ class FloatItem {
         this.media.classList.toggle('mv_anim', !!animate);
         this.media.style.width = this.iw + 'px';
         this.media.style.height = this.ih + 'px';
-        this.media.style.transform = `translate(${this.ox}px, ${this.oy}px)`;
+        this.media.style.transformOrigin = this.holdOrigin;
+        this.media.style.transform = `translate(${this.ox + this.holdTX}px, ${this.oy + this.holdTY}px) scale(${this.holdScale})`;
         if (animate) setTimeout(() => this.media.classList.remove('mv_anim'), 240);
     }
 
@@ -314,6 +319,7 @@ class FloatItem {
         this.viewport.style.clipPath = '';
         if (this.orig) { this.A = this.orig.A; this.fw = this.orig.fw; this.fh = this.orig.fh; }
         this.iw = this.fw; this.ih = this.fh; this.ox = 0; this.oy = 0;
+        this.holdScale = 1; this.holdTX = 0; this.holdTY = 0; this.holdOrigin = '0 0';
         this._applyFrame(); this._applyMedia(true); this._clampWindowIntoView(); // keep position
         this.showControls(); this.scheduleHide();
     }
@@ -560,7 +566,7 @@ class FloatItem {
         e.preventDefault(); e.stopPropagation();
         this.bringToFront();
         const f = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;
-        if (this.mode === 'locked') this.zoomTo(e.clientX, e.clientY, this.iw * f, true);
+        if (this.mode === 'locked') this.zoomTo(e.clientX, e.clientY, this.iw * f, false);
         else this.scaleAround(e.clientX, e.clientY, f);
         this.showControls(); this.scheduleHide();
     }
@@ -586,9 +592,14 @@ class FloatItem {
         }
     }
     _engageHold(x, y) {
-        this.persist = { iw: this.iw, ox: this.ox, oy: this.oy };
+        // Hold zoom = a CSS scale around the press point (smooth in & out, reverts exactly).
+        const rect = this.media.getBoundingClientRect();
+        const fx = clamp(x - rect.left, 0, this.iw);
+        const fy = clamp(y - rect.top, 0, this.ih);
+        this.holdOrigin = `${fx}px ${fy}px`;
+        this.holdScale = HOLD_ZOOM; this.holdTX = 0; this.holdTY = 0;
         this.holdActive = true;
-        this.zoomTo(x, y, this.iw * getSettings().holdZoom, false); // instant — no jump on engage
+        this._applyMedia(true);
     }
     _cancelHold() { if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; } }
 
@@ -630,8 +641,12 @@ class FloatItem {
             this._clampWindowIntoView();
             this.dragStart.x = this.posX; this.dragStart.y = this.posY;
             if (this.mode === 'resize') this._renderResize();
-        } else if (this.mode === 'locked' && (this.holdActive || this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5)) {
-            this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
+        } else if (this.mode === 'locked') {
+            if (this.holdActive) {
+                this.holdTX += dx; this.holdTY += dy; this._applyMedia();
+            } else if (this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5) {
+                this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
+            }
         }
     }
 
@@ -654,11 +669,10 @@ class FloatItem {
         this.pinch = null;
 
         if (this.mode === 'locked') {
-            if (this.holdActive && this.persist) {
-                this.iw = this.persist.iw; this.ih = this.iw / this.A;
-                this.ox = this.persist.ox; this.oy = this.persist.oy;
-                this._clampOffset(); this._applyMedia(true);
-                this.holdActive = false; this.persist = null;
+            if (this.holdActive) {
+                this.holdScale = 1; this.holdTX = 0; this.holdTY = 0;
+                this._applyMedia(true); // smooth zoom-out around the same point
+                this.holdActive = false;
             } else if (this.downInfo && !this.downInfo.moved && (Date.now() - this.downInfo.t) < TAP_MAX_MS) {
                 this._handleTap(e.clientX);
             }
@@ -823,7 +837,6 @@ function buildSettingsUI() {
           <label class="checkbox_label"><input type="checkbox" id="mv_avatars"> Avatars</label>
           <label class="checkbox_label"><input type="checkbox" id="mv_gallery"> Image gallery</label>
           <label>Controls fade (ms)<input type="number" id="mv_fade" class="text_pole" min="500" max="10000" step="100" style="width:90px"></label>
-          <label>Hold zoom<input type="number" id="mv_holdzoom" class="text_pole" min="1.1" max="6" step="0.1" style="width:90px"></label>
           <label>Max zoom<input type="number" id="mv_maxzoom" class="text_pole" min="2" max="12" step="0.5" style="width:90px"></label>
         </div>
       </div>
@@ -840,7 +853,7 @@ function buildSettingsUI() {
     };
     bind('mv_enabled', 'enabled'); bind('mv_chat', 'chat'); bind('mv_avatars', 'avatars');
     bind('mv_gallery', 'gallery'); bind('mv_fade', 'fadeMs', true);
-    bind('mv_holdzoom', 'holdZoom', true); bind('mv_maxzoom', 'maxZoom', true);
+    bind('mv_maxzoom', 'maxZoom', true);
 }
 
 let inited = false;
