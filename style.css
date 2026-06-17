@@ -50,7 +50,8 @@
     pointer-events: none;
     -webkit-user-drag: none;
     user-select: none;
-    transition: width 0.1s ease-out, height 0.1s ease-out, transform 0.1s ease-out; /* smooth zoom & pan */
+    /* NO always-on transition — it made live drag/pan jitter. Smoothing is applied only
+       for discrete actions (wheel zoom, hold revert) via .mv_anim. */
 }
 
 .mv_media.mv_anim {

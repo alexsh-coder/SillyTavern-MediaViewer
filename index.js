@@ -31,7 +31,7 @@ const DEFAULTS = {
     avatars: true,
     gallery: true,
     fadeMs: 1800,
-    holdZoom: 1.2,
+    holdZoom: 1.1,
     maxZoom: 6,
     imageHoldMs: 190,
     videoHoldMs: 300,
@@ -582,13 +582,13 @@ class FloatItem {
             this.dragStart = { x: this.posX, y: this.posY };
         } else if (this.mode === 'locked') {
             const delay = this.type === 'video' ? getSettings().videoHoldMs : getSettings().imageHoldMs;
-            this.holdTimer = setTimeout(() => this._engageHold(e.clientX, e.clientY), delay);
+            this.holdTimer = setTimeout(() => this._engageHold(this.lastPos.x, this.lastPos.y), delay);
         }
     }
     _engageHold(x, y) {
         this.persist = { iw: this.iw, ox: this.ox, oy: this.oy };
         this.holdActive = true;
-        this.zoomTo(x, y, this.iw * getSettings().holdZoom, true);
+        this.zoomTo(x, y, this.iw * getSettings().holdZoom, false); // instant — no jump on engage
     }
     _cancelHold() { if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; } }
 
@@ -607,8 +607,13 @@ class FloatItem {
             const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
             const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
             const ratio = dist / (this.pinch.dist || dist);
-            if (this.mode === 'locked') this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
-            else { this.scaleAround(mid.x, mid.y, ratio); this.pinch.dist = dist; if (this.mode === 'resize') this._renderResize(); }
+            if (this.mode === 'locked') {
+                // two-finger zoom in locked mode is disabled (commented out per request)
+                // this.zoomTo(mid.x, mid.y, this.pinch.iw0 * ratio);
+            } else {
+                this.scaleAround(mid.x, mid.y, ratio); this.pinch.dist = dist;
+                if (this.mode === 'resize') this._renderResize();
+            }
             return;
         }
 
