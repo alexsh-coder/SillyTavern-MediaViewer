@@ -149,6 +149,7 @@ class FloatItem {
         });
 
         viewport.appendChild(media);
+        this.media = media; // assign before any use (video block below calls _updateTime/_bindTrack)
         if (this.type === 'video') {
             this.centerIcon = document.createElement('div');
             this.centerIcon.className = 'mv_center';
