@@ -149,6 +149,18 @@ class FloatItem {
         });
 
         viewport.appendChild(media);
+        if (this.type === 'video') {
+            this.centerIcon = document.createElement('div');
+            this.centerIcon.className = 'mv_center';
+            this.centerIcon.innerHTML = '<i class="fa-solid fa-play"></i>';
+            viewport.appendChild(this.centerIcon);
+            this.seekFlash = document.createElement('div');
+            this.seekFlash.className = 'mv_seek';
+            viewport.appendChild(this.seekFlash);
+            media.addEventListener('pause', () => this._onVideoState(true));
+            media.addEventListener('play', () => this._onVideoState(false));
+            setTimeout(() => this._onVideoState(this.media.paused), 400); // reflect blocked-autoplay state
+        }
         win.appendChild(viewport);
 
         const controls = document.createElement('div');
@@ -276,6 +288,8 @@ class FloatItem {
     }
     scheduleHide() {
         if (this.fadeTimer) clearTimeout(this.fadeTimer);
+        // keep the menu visible while a video is paused (stopped)
+        if (this.type === 'video' && this.media && this.media.paused) return;
         this.fadeTimer = setTimeout(() => {
             if (this.mode !== 'crop' && this.mode !== 'resize') this.controls.classList.remove('mv_show');
         }, getSettings().fadeMs);
@@ -711,14 +725,14 @@ class FloatItem {
         this._cancelHold();
         this.pinch = null;
 
-        if (this.mode === 'locked') {
-            if (this.holdActive) {
-                this.holdScale = 1; this.holdTX = 0; this.holdTY = 0;
-                this._applyMedia(true); // smooth zoom-out around the same point
-                this.holdActive = false;
-            } else if (this.downInfo && !this.downInfo.moved && (Date.now() - this.downInfo.t) < TAP_MAX_MS) {
-                this._handleTap(e.clientX);
-            }
+        const isTap = this.downInfo && !this.downInfo.moved && (Date.now() - this.downInfo.t) < TAP_MAX_MS;
+        if (this.mode === 'locked' && this.holdActive) {
+            this.holdScale = 1; this.holdTX = 0; this.holdTY = 0;
+            this._applyMedia(true); // smooth zoom-out around the same point
+            this.holdActive = false;
+        } else if (isTap) {
+            if (this.type === 'video') this._handleTap(e.clientX);        // play/pause + seek in ANY mode
+            else if (this.mode === 'locked') this._handleTap(e.clientX);  // image: double-tap menu (locked)
         }
         this.scheduleHide();
         this.downInfo = null;
@@ -730,10 +744,12 @@ class FloatItem {
             if (this.singleTapTimer) { clearTimeout(this.singleTapTimer); this.singleTapTimer = null; }
             this.lastTap = 0;
             if (this.type === 'video') {
-                // double tap → seek; the menu is tied to pause state, not to double-tap
+                // double tap → seek (with a flash) + briefly reveal the menu
                 const rect = this.viewport.getBoundingClientRect();
                 const left = (x - rect.left) < rect.width / 2;
                 try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
+                this._seekFlash(left);
+                this.showControls(); this.scheduleHide();
             } else {
                 // image → double tap reveals the menu (the only way in locked mode)
                 this.showControls(); this.scheduleHide();
@@ -743,18 +759,32 @@ class FloatItem {
             this.singleTapTimer = setTimeout(() => {
                 this.singleTapTimer = null;
                 if (this.type === 'video') {
-                    if (this.media.paused) {
-                        this.media.play?.().catch(() => { });
-                        if (this.fadeTimer) clearTimeout(this.fadeTimer);
-                        this.controls.classList.remove('mv_show'); // playing → hide menu
-                    } else {
-                        this.media.pause?.();
-                        this.showControls(); // paused → show menu and keep it (no auto-hide)
-                    }
+                    // single tap toggles play/pause; the menu + center icon follow via events
+                    if (this.media.paused) this.media.play?.().catch(() => { });
+                    else this.media.pause?.();
                 }
-                // image single tap: nothing
             }, DBL_TAP_MS);
         }
+    }
+
+    _onVideoState(paused) {
+        if (this.centerIcon) this.centerIcon.classList.toggle('mv_show2', paused);
+        if (paused) {
+            this.showControls(); // stopped → show the menu and keep it visible
+        } else {
+            if (this.fadeTimer) clearTimeout(this.fadeTimer);
+            this.controls.classList.remove('mv_show'); // playing → hide the menu
+        }
+    }
+
+    _seekFlash(left) {
+        if (!this.seekFlash) return;
+        this.seekFlash.textContent = left ? '⏪ 5s' : '5s ⏩';
+        this.seekFlash.classList.toggle('mv_left', left);
+        this.seekFlash.classList.toggle('mv_right', !left);
+        this.seekFlash.classList.add('mv_show2');
+        if (this._seekTimer) clearTimeout(this._seekTimer);
+        this._seekTimer = setTimeout(() => this.seekFlash && this.seekFlash.classList.remove('mv_show2'), 550);
     }
 
     _exportState() {
