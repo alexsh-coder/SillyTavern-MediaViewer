@@ -120,28 +120,82 @@
     transform: translateY(-50%) scale(1);
 }
 
-.mv_time {
+.mv_bar {
     position: absolute;
-    right: 8px;
+    left: 10px;
+    right: 10px;
     bottom: 8px;
-    background: rgba(0, 0, 0, 0.6);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 8px;
-    border-radius: 12px;
-    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     z-index: 6;
     opacity: 0;
     transition: opacity 0.28s ease;
-    -webkit-backdrop-filter: blur(2px);
-    backdrop-filter: blur(2px);
+    pointer-events: none;
 }
 
-.mv_time.mv_show { opacity: 1; }
+.mv_bar.mv_show { opacity: 1; }
+
+.mv_t_cur,
+.mv_t_dur {
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+    flex: 0 0 auto;
+    min-width: 32px;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.mv_t_cur { text-align: right; }
+.mv_t_dur { text-align: left; }
+
+.mv_track {
+    position: relative;
+    flex: 1 1 auto;
+    height: 18px;            /* tall, easy-to-hit area */
+    display: flex;
+    align-items: center;
+    pointer-events: auto;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.mv_track::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.mv_fill {
+    position: relative;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--SmartThemeQuoteColor, #69b7ff);
+    width: 0%;
+    pointer-events: none;
+}
+
+.mv_fill::after {
+    content: '';
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
 
 @media (hover: hover) and (pointer: fine) {
-    .mv_win:not(.mv_locked):hover .mv_time { opacity: 1; }
+    .mv_win:not(.mv_locked):hover .mv_bar { opacity: 1; }
 }
 
 /* ---- control cluster (top-right): lock / crop / close ---- */

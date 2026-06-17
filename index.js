@@ -157,9 +157,17 @@ class FloatItem {
             this.seekFlash = document.createElement('div');
             this.seekFlash.className = 'mv_seek';
             viewport.appendChild(this.seekFlash);
-            this.timeEl = document.createElement('div');
-            this.timeEl.className = 'mv_time';
-            viewport.appendChild(this.timeEl);
+            const bar = document.createElement('div');
+            bar.className = 'mv_bar';
+            this.timeCur = document.createElement('span'); this.timeCur.className = 'mv_t_cur'; this.timeCur.textContent = '0:00';
+            this.track = document.createElement('div'); this.track.className = 'mv_track';
+            this.fill = document.createElement('div'); this.fill.className = 'mv_fill';
+            this.track.appendChild(this.fill);
+            this.timeDur = document.createElement('span'); this.timeDur.className = 'mv_t_dur'; this.timeDur.textContent = '0:00';
+            bar.append(this.timeCur, this.track, this.timeDur);
+            viewport.appendChild(bar);
+            this.bar = bar;
+            this._bindTrack();
             media.addEventListener('pause', () => this._onVideoState(true));
             media.addEventListener('play', () => this._onVideoState(false));
             media.addEventListener('timeupdate', () => this._updateTime());
@@ -290,7 +298,7 @@ class FloatItem {
 
     showControls() {
         this.controls.classList.add('mv_show');
-        if (this.timeEl) this.timeEl.classList.add('mv_show');
+        if (this.bar) this.bar.classList.add('mv_show');
         if (this.fadeTimer) clearTimeout(this.fadeTimer);
     }
     scheduleHide() {
@@ -300,7 +308,7 @@ class FloatItem {
         this.fadeTimer = setTimeout(() => {
             if (this.mode !== 'crop' && this.mode !== 'resize') {
                 this.controls.classList.remove('mv_show');
-                if (this.timeEl) this.timeEl.classList.remove('mv_show');
+                if (this.bar) this.bar.classList.remove('mv_show');
             }
         }, getSettings().fadeMs);
     }
@@ -378,6 +386,7 @@ class FloatItem {
         this.prevMode = this._baseMode();
         this.mode = 'resize';
         this.btnResize.classList.add('mv_active');
+        if (this.bar) this.bar.style.display = 'none';
         this.showControls();
         this.geomBackup = { fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy, posX: this.posX, posY: this.posY };
         const layer = document.createElement('div');
@@ -445,6 +454,7 @@ class FloatItem {
         this.resizeLayer?.remove();
         this.resizeLayer = this.resizeHandles = this.resizeActions = null;
         this.btnResize.classList.remove('mv_active');
+        if (this.bar) this.bar.style.display = '';
         this.mode = this.prevMode || 'free';
         this.scheduleHide();
     }
@@ -459,6 +469,7 @@ class FloatItem {
         this.prevMode = this._baseMode();
         this.mode = 'crop';
         this.btnCrop.classList.add('mv_active');
+        if (this.bar) this.bar.style.display = 'none';
         this.showControls();
 
         // current visible region as fractions of the full media (so an existing crop shows up
@@ -598,6 +609,7 @@ class FloatItem {
         this.cropLayer?.remove();
         this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = this.cropMove = null;
         this.btnCrop.classList.remove('mv_active');
+        if (this.bar) this.bar.style.display = '';
         this.controls.style.top = '';
         this.controls.style.right = '';
         this.mode = this.prevMode || 'free';
@@ -784,18 +796,53 @@ class FloatItem {
         } else {
             if (this.fadeTimer) clearTimeout(this.fadeTimer);
             this.controls.classList.remove('mv_show'); // playing → hide the menu
-            if (this.timeEl) this.timeEl.classList.remove('mv_show');
+            if (this.bar) this.bar.classList.remove('mv_show');
         }
     }
 
     _updateTime() {
-        if (!this.timeEl) return;
+        if (!this.track) return;
         const fmt = t => {
             t = Math.max(0, Math.floor(t || 0));
             return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
         };
         const dur = isFinite(this.media.duration) ? this.media.duration : 0;
-        this.timeEl.textContent = fmt(this.media.currentTime) + ' / ' + fmt(dur);
+        if (this.timeCur) this.timeCur.textContent = fmt(this.media.currentTime);
+        if (this.timeDur) this.timeDur.textContent = fmt(dur);
+        if (this.fill) this.fill.style.width = (dur ? (this.media.currentTime / dur * 100) : 0) + '%';
+    }
+
+    _bindTrack() {
+        const seek = clientX => {
+            const r = this.track.getBoundingClientRect();
+            const frac = clamp((clientX - r.left) / (r.width || 1), 0, 1);
+            const dur = isFinite(this.media.duration) ? this.media.duration : 0;
+            if (dur) { try { this.media.currentTime = frac * dur; } catch { } }
+            this._updateTime();
+        };
+        let dragging = false;
+        this.track.addEventListener('pointerdown', e => {
+            if (this.mode === 'crop' || this.mode === 'resize') return;
+            e.preventDefault(); e.stopPropagation();
+            dragging = true;
+            this.track.setPointerCapture?.(e.pointerId);
+            this.showControls();
+            seek(e.clientX);
+        });
+        this.track.addEventListener('pointermove', e => {
+            if (!dragging) return;
+            e.preventDefault(); e.stopPropagation();
+            seek(e.clientX);
+        });
+        const end = e => {
+            if (!dragging) return;
+            dragging = false;
+            e.stopPropagation();
+            this.track.releasePointerCapture?.(e.pointerId);
+            this.scheduleHide();
+        };
+        this.track.addEventListener('pointerup', end);
+        this.track.addEventListener('pointercancel', end);
     }
 
     _seekFlash(left) {
