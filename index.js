@@ -727,22 +727,30 @@ class FloatItem {
     _handleTap(x) {
         const now = Date.now();
         if (now - this.lastTap < DBL_TAP_MS) {
-            // double tap → reveal the menu (the only way to get it in locked mode)
             if (this.singleTapTimer) { clearTimeout(this.singleTapTimer); this.singleTapTimer = null; }
             this.lastTap = 0;
-            this.showControls(); this.scheduleHide();
             if (this.type === 'video') {
+                // double tap → seek; the menu is tied to pause state, not to double-tap
                 const rect = this.viewport.getBoundingClientRect();
                 const left = (x - rect.left) < rect.width / 2;
                 try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
+            } else {
+                // image → double tap reveals the menu (the only way in locked mode)
+                this.showControls(); this.scheduleHide();
             }
         } else {
             this.lastTap = now;
             this.singleTapTimer = setTimeout(() => {
                 this.singleTapTimer = null;
                 if (this.type === 'video') {
-                    if (this.media.paused) this.media.play?.().catch(() => { });
-                    else this.media.pause?.();
+                    if (this.media.paused) {
+                        this.media.play?.().catch(() => { });
+                        if (this.fadeTimer) clearTimeout(this.fadeTimer);
+                        this.controls.classList.remove('mv_show'); // playing → hide menu
+                    } else {
+                        this.media.pause?.();
+                        this.showControls(); // paused → show menu and keep it (no auto-hide)
+                    }
                 }
                 // image single tap: nothing
             }, DBL_TAP_MS);
