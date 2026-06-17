@@ -31,14 +31,11 @@ const DEFAULTS = {
     avatars: true,
     gallery: true,
     fadeMs: 1800,
+    holdZoom: 1.5,
     maxZoom: 6,
     imageHoldMs: 190,
     videoHoldMs: 300,
 };
-
-// Hold-zoom magnification — a code constant (NOT a saved setting) so it always applies,
-// regardless of any stale value persisted in settings.json. Keep it gentle.
-const HOLD_ZOOM = 1.3;
 
 const VIDEO_EXT = ['mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v'];
 const TAP_MAX_MS = 250;
@@ -52,8 +49,10 @@ let zBase = 2147482000;
 let layerEl = null;
 
 function getSettings() {
-    extension_settings[MODULE] = Object.assign({}, DEFAULTS, extension_settings[MODULE] || {});
-    return extension_settings[MODULE];
+    const s = extension_settings[MODULE] = Object.assign({}, DEFAULTS, extension_settings[MODULE] || {});
+    // one-time migration: reset the stale holdZoom (2.5) persisted by older versions
+    if (s._mvMig !== 1) { s.holdZoom = 1.5; s._mvMig = 1; try { saveSettingsDebounced(); } catch { } }
+    return s;
 }
 
 const clamp = (v, lo, hi) => (hi < lo ? lo : Math.min(hi, Math.max(lo, v)));
@@ -431,8 +430,21 @@ class FloatItem {
         this.prevMode = this._baseMode();
         this.mode = 'crop';
         this.btnCrop.classList.add('mv_active');
-        this.crop = { t: 0, r: 0, b: 0, l: 0 };
         this.showControls();
+
+        // current visible region as fractions of the full media (so an existing crop shows up
+        // as the selection, with the cropped-away area dimmed and editable / expandable)
+        const selL = clamp(-this.ox / this.iw, 0, 1);
+        const selT = clamp(-this.oy / this.ih, 0, 1);
+        const selR = clamp((this.iw - this.fw + this.ox) / this.iw, 0, 1);
+        const selB = clamp((this.ih - this.fh + this.oy) / this.ih, 0, 1);
+        this.cropBackup = { A: this.A, fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy, posX: this.posX, posY: this.posY };
+        // switch to the full image (fit) for editing
+        const o = this.orig || this._fitFor(this.iw, this.ih);
+        this.A = o.A; this.fw = o.fw; this.fh = o.fh; this.iw = o.fw; this.ih = o.fh; this.ox = 0; this.oy = 0;
+        this.holdScale = 1; this.holdTX = 0; this.holdTY = 0; this.holdOrigin = '0 0';
+        this.crop = { l: selL, t: selT, r: selR, b: selB };
+        this._applyFrame(); this._applyMedia(); this._centerInView();
 
         const layer = document.createElement('div');
         layer.className = 'mv_crop';
@@ -533,14 +545,20 @@ class FloatItem {
     _exitCrop(apply) {
         if (apply) {
             const { l, t, r, b } = this.crop;
-            this.ox -= l * this.fw;
-            this.oy -= t * this.fh;
             this.posX += l * this.fw;
             this.posY += t * this.fh;
+            this.ox = -l * this.iw;
+            this.oy = -t * this.ih;
             this.fw = this.fw * (1 - l - r);
             this.fh = this.fh * (1 - t - b);
-            this._applyFrame(); this._clampOffset(); this._applyMedia(); this._applyPos(); this._clampWindowIntoView();
+            this._applyFrame(); this._applyMedia(); this._applyPos(); this._clampWindowIntoView();
+        } else if (this.cropBackup) {
+            const g = this.cropBackup;
+            this.A = g.A; this.fw = g.fw; this.fh = g.fh; this.iw = g.iw; this.ih = g.ih;
+            this.ox = g.ox; this.oy = g.oy; this.posX = g.posX; this.posY = g.posY;
+            this._applyFrame(); this._applyMedia(); this._applyPos();
         }
+        this.cropBackup = null;
         this.cropLayer?.remove();
         this.cropLayer = this.cropShade = this.cropHandles = this.cropActions = this.cropMove = null;
         this.btnCrop.classList.remove('mv_active');
@@ -597,7 +615,7 @@ class FloatItem {
         const fx = clamp(x - rect.left, 0, this.iw);
         const fy = clamp(y - rect.top, 0, this.ih);
         this.holdOrigin = `${fx}px ${fy}px`;
-        this.holdScale = HOLD_ZOOM; this.holdTX = 0; this.holdTY = 0;
+        this.holdScale = getSettings().holdZoom; this.holdTX = 0; this.holdTY = 0;
         this.holdActive = true;
         this._applyMedia(true);
     }
@@ -641,13 +659,8 @@ class FloatItem {
             this._clampWindowIntoView();
             this.dragStart.x = this.posX; this.dragStart.y = this.posY;
             if (this.mode === 'resize') this._renderResize();
-        } else if (this.mode === 'locked') {
-            if (this.holdActive) {
-                this.holdTX += dx; this.holdTY += dy; this._applyMedia();
-            } else if (this.iw > this.fw + 0.5 || this.ih > this.fh + 0.5) {
-                this.ox += dx; this.oy += dy; this._clampOffset(); this._applyMedia();
-            }
         }
+        // locked mode: NO dragging/panning — only press-and-hold zoom (stays within bounds)
     }
 
     _onUp(e) {
@@ -837,6 +850,7 @@ function buildSettingsUI() {
           <label class="checkbox_label"><input type="checkbox" id="mv_avatars"> Avatars</label>
           <label class="checkbox_label"><input type="checkbox" id="mv_gallery"> Image gallery</label>
           <label>Controls fade (ms)<input type="number" id="mv_fade" class="text_pole" min="500" max="10000" step="100" style="width:90px"></label>
+          <label>Hold zoom<input type="number" id="mv_holdzoom" class="text_pole" min="1.05" max="6" step="0.05" style="width:90px"></label>
           <label>Max zoom<input type="number" id="mv_maxzoom" class="text_pole" min="2" max="12" step="0.5" style="width:90px"></label>
         </div>
       </div>
@@ -853,7 +867,7 @@ function buildSettingsUI() {
     };
     bind('mv_enabled', 'enabled'); bind('mv_chat', 'chat'); bind('mv_avatars', 'avatars');
     bind('mv_gallery', 'gallery'); bind('mv_fade', 'fadeMs', true);
-    bind('mv_maxzoom', 'maxZoom', true);
+    bind('mv_holdzoom', 'holdZoom', true); bind('mv_maxzoom', 'maxZoom', true);
 }
 
 let inited = false;
