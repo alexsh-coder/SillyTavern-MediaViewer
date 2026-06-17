@@ -439,12 +439,19 @@ class FloatItem {
         const selR = clamp((this.iw - this.fw + this.ox) / this.iw, 0, 1);
         const selB = clamp((this.ih - this.fh + this.oy) / this.ih, 0, 1);
         this.cropBackup = { A: this.A, fw: this.fw, fh: this.fh, iw: this.iw, ih: this.ih, ox: this.ox, oy: this.oy, posX: this.posX, posY: this.posY };
-        // switch to the full image (fit) for editing
-        const o = this.orig || this._fitFor(this.iw, this.ih);
-        this.A = o.A; this.fw = o.fw; this.fh = o.fh; this.iw = o.fw; this.ih = o.fh; this.ox = 0; this.oy = 0;
+        // expand to the full image AT THE CURRENT SCALE, keeping the visible region exactly in
+        // place (photo doesn't jump); the cropped-away area appears dimmed around it
+        const cropWFrac = Math.max(0.001, 1 - selL - selR);
+        const cropHFrac = Math.max(0.001, 1 - selT - selB);
+        const fullW = this.fw / cropWFrac;
+        const fullH = this.fh / cropHFrac;
+        this.posX -= selL * fullW;
+        this.posY -= selT * fullH;
+        this.fw = fullW; this.fh = fullH; this.iw = fullW; this.ih = fullH;
+        this.ox = 0; this.oy = 0;
         this.holdScale = 1; this.holdTX = 0; this.holdTY = 0; this.holdOrigin = '0 0';
         this.crop = { l: selL, t: selT, r: selR, b: selB };
-        this._applyFrame(); this._applyMedia(); this._centerInView();
+        this._applyFrame(); this._applyMedia(); this._applyPos();
 
         const layer = document.createElement('div');
         layer.className = 'mv_crop';
@@ -595,7 +602,7 @@ class FloatItem {
         this.win.setPointerCapture?.(e.pointerId);
         this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         this.bringToFront();
-        this.showControls();
+        if (this.mode !== 'locked') this.showControls(); // in locked, the menu shows only on double-tap
 
         if (this.pointers.size === 2) { this._startPinch(); this._cancelHold(); return; }
 
@@ -618,6 +625,16 @@ class FloatItem {
         this.holdScale = getSettings().holdZoom; this.holdTX = 0; this.holdTY = 0;
         this.holdActive = true;
         this._applyMedia(true);
+    }
+    /* Clamp the hold-pan so the magnified view never goes past the image (or, if cropped,
+       past the crop region). */
+    _clampHold() {
+        const s = this.holdScale;
+        if (s <= 1) { this.holdTX = 0; this.holdTY = 0; return; }
+        const parts = (this.holdOrigin || '0 0').split(' ');
+        const fox = parseFloat(parts[0]) || 0, foy = parseFloat(parts[1]) || 0;
+        this.holdTX = clamp(this.holdTX, (s - 1) * (fox + this.ox - this.fw), (s - 1) * (fox + this.ox));
+        this.holdTY = clamp(this.holdTY, (s - 1) * (foy + this.oy - this.fh), (s - 1) * (foy + this.oy));
     }
     _cancelHold() { if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; } }
 
@@ -659,8 +676,10 @@ class FloatItem {
             this._clampWindowIntoView();
             this.dragStart.x = this.posX; this.dragStart.y = this.posY;
             if (this.mode === 'resize') this._renderResize();
+        } else if (this.mode === 'locked' && this.holdActive) {
+            // pan the magnified view while holding — clamped to the image/crop; reverts on release
+            this.holdTX += dx; this.holdTY += dy; this._clampHold(); this._applyMedia();
         }
-        // locked mode: NO dragging/panning — only press-and-hold zoom (stays within bounds)
     }
 
     _onUp(e) {
@@ -695,20 +714,26 @@ class FloatItem {
     }
 
     _handleTap(x) {
-        if (this.type !== 'video') return;
         const now = Date.now();
         if (now - this.lastTap < DBL_TAP_MS) {
+            // double tap → reveal the menu (the only way to get it in locked mode)
             if (this.singleTapTimer) { clearTimeout(this.singleTapTimer); this.singleTapTimer = null; }
             this.lastTap = 0;
-            const rect = this.viewport.getBoundingClientRect();
-            const left = (x - rect.left) < rect.width / 2;
-            try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
+            this.showControls(); this.scheduleHide();
+            if (this.type === 'video') {
+                const rect = this.viewport.getBoundingClientRect();
+                const left = (x - rect.left) < rect.width / 2;
+                try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
+            }
         } else {
             this.lastTap = now;
             this.singleTapTimer = setTimeout(() => {
                 this.singleTapTimer = null;
-                if (this.media.paused) this.media.play?.().catch(() => { });
-                else this.media.pause?.();
+                if (this.type === 'video') {
+                    if (this.media.paused) this.media.play?.().catch(() => { });
+                    else this.media.pause?.();
+                }
+                // image single tap: nothing
             }, DBL_TAP_MS);
         }
     }
