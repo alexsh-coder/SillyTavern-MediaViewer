@@ -41,7 +41,7 @@ const VIDEO_EXT = ['mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v'];
 const TAP_MAX_MS = 250;
 const TAP_MOVE_SLOP = 8;
 const DBL_TAP_MS = 300;
-const MIN_WIN = 90;
+const MIN_WIN = 200;   // min window width — keeps the top-right controls from overflowing
 const MIN_CROP_PX = 210;
 const WHEEL_STEP = 1.1;
 
@@ -49,7 +49,11 @@ let zBase = 2147482000;
 let layerEl = null;
 
 function getSettings() {
-    const s = extension_settings[MODULE] = Object.assign({}, DEFAULTS, extension_settings[MODULE] || {});
+    // IMPORTANT: keep the SAME object reference (the settings panel binds to it). Recreating
+    // it each call made UI changes write to a stale copy → settings appeared to do nothing.
+    if (!extension_settings[MODULE]) extension_settings[MODULE] = {};
+    const s = extension_settings[MODULE];
+    for (const k in DEFAULTS) if (s[k] === undefined) s[k] = DEFAULTS[k];
     // one-time migration: reset the stale holdZoom (2.5) persisted by older versions
     if (s._mvMig !== 1) { s.holdZoom = 1.5; s._mvMig = 1; try { saveSettingsDebounced(); } catch { } }
     return s;
@@ -626,15 +630,21 @@ class FloatItem {
         this.holdActive = true;
         this._applyMedia(true);
     }
-    /* Clamp the hold-pan so the magnified view never goes past the image (or, if cropped,
-       past the crop region). */
-    _clampHold() {
+    /* Pan the magnified view, getting "heavier" near the edges of the image (or crop) and
+       never crossing them. */
+    _panHold(dx, dy) {
         const s = this.holdScale;
-        if (s <= 1) { this.holdTX = 0; this.holdTY = 0; return; }
+        if (s <= 1) return;
         const parts = (this.holdOrigin || '0 0').split(' ');
         const fox = parseFloat(parts[0]) || 0, foy = parseFloat(parts[1]) || 0;
-        this.holdTX = clamp(this.holdTX, (s - 1) * (fox + this.ox - this.fw), (s - 1) * (fox + this.ox));
-        this.holdTY = clamp(this.holdTY, (s - 1) * (foy + this.oy - this.fh), (s - 1) * (foy + this.oy));
+        const EDGE = 120; // within this many px of a bound, movement slows toward 0
+        const resist = (cur, d, lo, hi) => {
+            if (d > 0) { const rem = hi - cur; return rem <= 0 ? cur : cur + d * Math.min(1, rem / EDGE); }
+            if (d < 0) { const rem = cur - lo; return rem <= 0 ? cur : cur + d * Math.min(1, rem / EDGE); }
+            return cur;
+        };
+        this.holdTX = resist(this.holdTX, dx, (s - 1) * (fox + this.ox - this.fw), (s - 1) * (fox + this.ox));
+        this.holdTY = resist(this.holdTY, dy, (s - 1) * (foy + this.oy - this.fh), (s - 1) * (foy + this.oy));
     }
     _cancelHold() { if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; } }
 
@@ -677,8 +687,8 @@ class FloatItem {
             this.dragStart.x = this.posX; this.dragStart.y = this.posY;
             if (this.mode === 'resize') this._renderResize();
         } else if (this.mode === 'locked' && this.holdActive) {
-            // pan the magnified view while holding — clamped to the image/crop; reverts on release
-            this.holdTX += dx; this.holdTY += dy; this._clampHold(); this._applyMedia();
+            // pan the magnified view while holding — heavier near the image/crop edges; reverts on release
+            this._panHold(dx, dy); this._applyMedia();
         }
     }
 

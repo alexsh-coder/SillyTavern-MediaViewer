@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Sasha",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "homePage": "https://github.com/",
     "auto_update": false
 }
