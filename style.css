@@ -85,7 +85,8 @@
 
 /* desktop: reveal on hover (no need to drag) */
 @media (hover: hover) and (pointer: fine) {
-    .mv_win:hover .mv_controls {
+    /* not in locked mode — there the menu shows only on double-click (like mobile double-tap) */
+    .mv_win:not(.mv_locked):hover .mv_controls {
         opacity: 1;
         pointer-events: auto;
     }

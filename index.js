@@ -33,6 +33,7 @@ const DEFAULTS = {
     fadeMs: 1800,
     holdZoom: 1.5,
     maxZoom: 6,
+    edgeResist: 240,   // hold-pan edge resistance zone (px); higher = heavier near edges
     imageHoldMs: 190,
     videoHoldMs: 300,
 };
@@ -637,7 +638,7 @@ class FloatItem {
         if (s <= 1) return;
         const parts = (this.holdOrigin || '0 0').split(' ');
         const fox = parseFloat(parts[0]) || 0, foy = parseFloat(parts[1]) || 0;
-        const EDGE = 120; // within this many px of a bound, movement slows toward 0
+        const EDGE = Math.max(1, getSettings().edgeResist); // within this many px of a bound, movement slows toward 0
         const resist = (cur, d, lo, hi) => {
             if (d > 0) { const rem = hi - cur; return rem <= 0 ? cur : cur + d * Math.min(1, rem / EDGE); }
             if (d < 0) { const rem = cur - lo; return rem <= 0 ? cur : cur + d * Math.min(1, rem / EDGE); }
@@ -887,6 +888,7 @@ function buildSettingsUI() {
           <label>Controls fade (ms)<input type="number" id="mv_fade" class="text_pole" min="500" max="10000" step="100" style="width:90px"></label>
           <label>Hold zoom<input type="number" id="mv_holdzoom" class="text_pole" min="1.05" max="6" step="0.05" style="width:90px"></label>
           <label>Max zoom<input type="number" id="mv_maxzoom" class="text_pole" min="2" max="12" step="0.5" style="width:90px"></label>
+          <label>Edge resistance<input type="number" id="mv_edgeresist" class="text_pole" min="0" max="800" step="20" style="width:90px"></label>
         </div>
       </div>
     </div>`;
@@ -903,6 +905,7 @@ function buildSettingsUI() {
     bind('mv_enabled', 'enabled'); bind('mv_chat', 'chat'); bind('mv_avatars', 'avatars');
     bind('mv_gallery', 'gallery'); bind('mv_fade', 'fadeMs', true);
     bind('mv_holdzoom', 'holdZoom', true); bind('mv_maxzoom', 'maxZoom', true);
+    bind('mv_edgeresist', 'edgeResist', true);
 }
 
 let inited = false;
