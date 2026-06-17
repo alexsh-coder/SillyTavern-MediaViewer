@@ -42,6 +42,7 @@ const VIDEO_EXT = ['mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v'];
 const TAP_MAX_MS = 250;
 const TAP_MOVE_SLOP = 8;
 const DBL_TAP_MS = 300;
+const LOCK_TAP_MS = 350;   // max gap between taps when counting a double-tap (image → lock)
 const MIN_WIN = 200;   // min window width — keeps the top-right controls from overflowing
 const MIN_CROP_PX = 210;
 const WHEEL_STEP = 1.1;
@@ -754,8 +755,8 @@ class FloatItem {
             this._applyMedia(true); // smooth zoom-out around the same point
             this.holdActive = false;
         } else if (isTap) {
-            if (this.type === 'video') this._handleTap(e.clientX);        // play/pause + seek in ANY mode
-            else if (this.mode === 'locked') this._handleTap(e.clientX);  // image: double-tap menu (locked)
+            if (this.type === 'video') this._handleTap(e.clientX);                         // play/pause + seek in ANY mode
+            else if (this.mode === 'free' || this.mode === 'locked') this._handleTap(e.clientX); // image: flash menu + double-tap lock
         }
         this.scheduleHide();
         this.downInfo = null;
@@ -763,8 +764,13 @@ class FloatItem {
 
     _handleTap(x) {
         if (this.type !== 'video') {
-            // image (locked): a tap briefly flashes the tools menu (lights up, then fades)
+            // image: a tap briefly flashes the tools menu (lights up, then fades)...
             this.showControls(); this.scheduleHide();
+            // ...and a double tap toggles lock (fix the window in place), like the 🔒 button
+            const now = Date.now();
+            this._tapStreak = (now - (this._lastImgTap || 0) < LOCK_TAP_MS) ? (this._tapStreak || 0) + 1 : 1;
+            this._lastImgTap = now;
+            if (this._tapStreak >= 2) { this._tapStreak = 0; this.toggleLock(); }
             return;
         }
         const now = Date.now();

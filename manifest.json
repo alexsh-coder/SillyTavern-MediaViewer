@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Sasha",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "homePage": "https://github.com/alexsh-coder/SillyTavern-MediaViewer",
     "auto_update": false
 }
