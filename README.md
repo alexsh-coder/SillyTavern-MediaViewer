@@ -7,7 +7,7 @@ it out into a draggable floating window. Open as many as you like at once. While
 enabled it **replaces SillyTavern's built‑in lightbox / avatar zoom / gallery popup**; disable it
 and the native behavior returns.
 
-There is **no backdrop dim** — the page behind stays visible and usable, the chat keeps scrolling,
+Page behind stays visible and usable, the chat keeps scrolling,
 and SillyTavern's swipe gestures keep working. Each window's position/zoom/crop is remembered and
 restored when you reopen the same media.
 
