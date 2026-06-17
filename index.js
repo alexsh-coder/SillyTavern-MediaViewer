@@ -157,8 +157,14 @@ class FloatItem {
             this.seekFlash = document.createElement('div');
             this.seekFlash.className = 'mv_seek';
             viewport.appendChild(this.seekFlash);
+            this.timeEl = document.createElement('div');
+            this.timeEl.className = 'mv_time';
+            viewport.appendChild(this.timeEl);
             media.addEventListener('pause', () => this._onVideoState(true));
             media.addEventListener('play', () => this._onVideoState(false));
+            media.addEventListener('timeupdate', () => this._updateTime());
+            media.addEventListener('loadedmetadata', () => this._updateTime());
+            this._updateTime();
             setTimeout(() => this._onVideoState(this.media.paused), 400); // reflect blocked-autoplay state
         }
         win.appendChild(viewport);
@@ -284,6 +290,7 @@ class FloatItem {
 
     showControls() {
         this.controls.classList.add('mv_show');
+        if (this.timeEl) this.timeEl.classList.add('mv_show');
         if (this.fadeTimer) clearTimeout(this.fadeTimer);
     }
     scheduleHide() {
@@ -291,7 +298,10 @@ class FloatItem {
         // keep the menu visible while a video is paused (stopped)
         if (this.type === 'video' && this.media && this.media.paused) return;
         this.fadeTimer = setTimeout(() => {
-            if (this.mode !== 'crop' && this.mode !== 'resize') this.controls.classList.remove('mv_show');
+            if (this.mode !== 'crop' && this.mode !== 'resize') {
+                this.controls.classList.remove('mv_show');
+                if (this.timeEl) this.timeEl.classList.remove('mv_show');
+            }
         }, getSettings().fadeMs);
     }
 
@@ -774,7 +784,18 @@ class FloatItem {
         } else {
             if (this.fadeTimer) clearTimeout(this.fadeTimer);
             this.controls.classList.remove('mv_show'); // playing → hide the menu
+            if (this.timeEl) this.timeEl.classList.remove('mv_show');
         }
+    }
+
+    _updateTime() {
+        if (!this.timeEl) return;
+        const fmt = t => {
+            t = Math.max(0, Math.floor(t || 0));
+            return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+        };
+        const dur = isFinite(this.media.duration) ? this.media.duration : 0;
+        this.timeEl.textContent = fmt(this.media.currentTime) + ' / ' + fmt(dur);
     }
 
     _seekFlash(left) {

@@ -120,6 +120,30 @@
     transform: translateY(-50%) scale(1);
 }
 
+.mv_time {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 12px;
+    pointer-events: none;
+    z-index: 6;
+    opacity: 0;
+    transition: opacity 0.28s ease;
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+}
+
+.mv_time.mv_show { opacity: 1; }
+
+@media (hover: hover) and (pointer: fine) {
+    .mv_win:not(.mv_locked):hover .mv_time { opacity: 1; }
+}
+
 /* ---- control cluster (top-right): lock / crop / close ---- */
 .mv_controls {
     position: absolute;
