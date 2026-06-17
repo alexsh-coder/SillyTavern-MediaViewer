@@ -762,30 +762,28 @@ class FloatItem {
     }
 
     _handleTap(x) {
+        if (this.type !== 'video') {
+            // image (locked): a tap briefly flashes the tools menu (lights up, then fades)
+            this.showControls(); this.scheduleHide();
+            return;
+        }
         const now = Date.now();
         if (now - this.lastTap < DBL_TAP_MS) {
+            // double tap → seek (with a flash) + briefly reveal the menu
             if (this.singleTapTimer) { clearTimeout(this.singleTapTimer); this.singleTapTimer = null; }
             this.lastTap = 0;
-            if (this.type === 'video') {
-                // double tap → seek (with a flash) + briefly reveal the menu
-                const rect = this.viewport.getBoundingClientRect();
-                const left = (x - rect.left) < rect.width / 2;
-                try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
-                this._seekFlash(left);
-                this.showControls(); this.scheduleHide();
-            } else {
-                // image → double tap reveals the menu (the only way in locked mode)
-                this.showControls(); this.scheduleHide();
-            }
+            const rect = this.viewport.getBoundingClientRect();
+            const left = (x - rect.left) < rect.width / 2;
+            try { this.media.currentTime = clamp(this.media.currentTime + (left ? -5 : 5), 0, this.media.duration || 1e9); } catch { }
+            this._seekFlash(left);
+            this.showControls(); this.scheduleHide();
         } else {
             this.lastTap = now;
             this.singleTapTimer = setTimeout(() => {
                 this.singleTapTimer = null;
-                if (this.type === 'video') {
-                    // single tap toggles play/pause; the menu + center icon follow via events
-                    if (this.media.paused) this.media.play?.().catch(() => { });
-                    else this.media.pause?.();
-                }
+                // single tap toggles play/pause; the menu + center icon follow via events
+                if (this.media.paused) this.media.play?.().catch(() => { });
+                else this.media.pause?.();
             }, DBL_TAP_MS);
         }
     }
