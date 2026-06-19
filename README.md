@@ -1,6 +1,6 @@
 # MediaViewer
 
-![preview](https://imgur.com/a/dARgzDF)
+![preview](https://i.imgur.com/1KmoNmp.gif)
 
 A floating, multi-instance media viewer for [SillyTavern](https://github.com/SillyTavern/SillyTavern).
 
