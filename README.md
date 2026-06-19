@@ -1,5 +1,7 @@
 # MediaViewer
 
+![preview](https://imgur.com/a/dARgzDF)
+
 A floating, multi-instance media viewer for [SillyTavern](https://github.com/SillyTavern/SillyTavern).
 
 Click any media — **chat images/videos, message avatars, or image‑gallery thumbnails** — to pop
