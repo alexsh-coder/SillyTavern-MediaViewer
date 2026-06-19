@@ -1,6 +1,5 @@
 # MediaViewer
 
-![preview](https://i.imgur.com/1KmoNmp.gif)
 
 A floating, multi-instance media viewer for [SillyTavern](https://github.com/SillyTavern/SillyTavern).
 
@@ -14,6 +13,12 @@ and SillyTavern's swipe gestures keep working. Each window's position/zoom/crop 
 restored when you reopen the same media.
 
 > Works on desktop and mobile (including iOS Safari). Tested on SillyTavern 1.18.x.
+
+---
+
+## Preview
+
+![preview](preview.gif)
 
 ---
 
